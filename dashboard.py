@@ -1900,3 +1900,83 @@ COMTRADE_KEY = "tu-api-key-aquí"
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     main()
+# ─────────────────────────────────────────────────────────────────────────────
+# SECCIÓN 4: CÁLCULO FINAL Y RENDERIZADO
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_icg(df: pd.DataFrame, us_tariff_shock: float) -> pd.DataFrame:
+    """
+    Integra las tres dimensiones y aplica la penalidad arancelaria.
+    """
+    df["Leverage"] = calculate_leverage(df)
+    df["Resilience"] = calculate_resilience(df)
+    
+    # Dependencia Externa: f(Exportaciones a EEUU + Sanciones actuales)
+    # A mayor dependencia, menor capacidad de conversión (divisor)
+    df["Dependency"] = (df["us_export_pct"] * 0.7 + df["sanctions_score"] * 10 * 0.3).clip(1, 100)
+    
+    # Fórmula Base
+    df["ICG_Raw"] = (df["Leverage"] * df["Resilience"]) / np.sqrt(df["Dependency"])
+    
+    # Impacto Trump 2026: Penalidad directa según nivel de arancel y exposición
+    # Si un país exporta el 80% a EEUU, un arancel del 50% le quita 40 puntos de ICG
+    penalty = (us_tariff_shock / 100) * df["us_export_pct"]
+    df["ICG_Final"] = (df["ICG_Raw"] - penalty).clip(0, 100)
+    
+    return df
+
+# --- EJECUCIÓN DEL FLUJO ---
+df_base = build_geopolitical_database()
+
+# Sidebar: Controles de Simulación
+with st.sidebar:
+    st.markdown("### 🛠️ SIMULADOR DE ESCENARIOS")
+    us_tariff = st.slider("Arancel Global EE.UU. (%)", 0, 100, 10)
+    st.markdown("---")
+    st.markdown("### 📡 ESTADO DE FUENTES")
+    for src, status in DataStatus.get_all().items():
+        color = "status-live" if status == "LIVE" else "status-offline"
+        st.markdown(f"• {src}: <span class='{color}'>{status}</span>", unsafe_allow_html=True)
+
+df_final = compute_icg(df_base, us_tariff)
+
+# --- RENDERIZADO DE INTERFAZ ---
+st.markdown(f"""
+<div class="icg-header">
+    <div class="icg-subtitle">Global Intelligence System v1.0</div>
+    <h1 class="icg-title">ICG: Índice de Conversión Geoeconómica</h1>
+    <div class="icg-formula">ICG = (Apalancamiento × Resiliencia) / √Dependencia</div>
+</div>
+""", unsafe_allow_html=True)
+
+# Métricas Top
+cols = st.columns(4)
+top_country = df_final.loc[df_final['ICG_Final'].idxmax()]
+worst_country = df_final.loc[df_final['ICG_Final'].idxmin()]
+
+cols[0].markdown(f"<div class='metric-card'><div class='metric-label'>Líder de Resiliencia</div><div class='metric-value'>{top_country['country']}</div></div>", unsafe_allow_html=True)
+cols[1].markdown(f"<div class='metric-card'><div class='metric-label'>ICG Promedio Global</div><div class='metric-value'>{df_final['ICG_Final'].mean():.1f}</div></div>", unsafe_allow_html=True)
+cols[2].markdown(f"<div class='metric-card'><div class='metric-label'>Presión Arancelaria</div><div class='metric-value'>{us_tariff}%</div></div>", unsafe_allow_html=True)
+cols[3].markdown(f"<div class='metric-card'><div class='metric-label'>Punto de Quiebre</div><div class='metric-value' style='color:#FF6B6B'>{worst_country['country']}</div></div>", unsafe_allow_html=True)
+
+# Visualización Principal
+tab1, tab2 = st.tabs(["🗺️ MAPA DE PODER", "📊 ANÁLISIS POR BLOQUES"])
+
+with tab1:
+    fig_map = px.choropleth(
+        df_final, locations="iso3", color="ICG_Final",
+        hover_name="country", color_continuous_scale="RdYlGn",
+        range_color=[0, 100], projection="natural earth",
+        template="plotly_dark"
+    )
+    fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, paper_bgcolor='rgba(0,0,0,0)')
+    st.plotly_chart(fig_map, use_container_width=True)
+
+with tab2:
+    fig_bar = px.bar(
+        df_final.sort_values("ICG_Final", ascending=False),
+        x="country", y="ICG_Final", color="region",
+        title="Clasificación por Capacidad de Conversión",
+        template="plotly_dark"
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
