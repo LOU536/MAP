@@ -1,871 +1,642 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║         ÍNDICE DE CONVERSIÓN GEOECONÓMICA (ICG) — DASHBOARD v1.0           ║
-║         Ciencia de Datos & Geopolítica | Streamlit + Plotly                 ║
+║       ÍNDICE DE CONVERSIÓN GEOECONÓMICA — DASHBOARD v2.0                   ║
+║       Ciencia de Datos & Geopolítica | Streamlit + Plotly                   ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
-║  Fórmula central:                                                            ║
-║      ICG = (Apalancamiento × Resiliencia) / Dependencia_Externa             ║
+║  NOVEDADES v2.0:                                                             ║
+║  • Radar de Comparación Dual: dos países, dimensión a dimensión             ║
+║  • Noticias en vivo: NewsAPI → ajuste automático sanctions_score            ║
+║  • Fórmula calibrada v3 (única definición, sin duplicados)                  ║
+║  • Arquitectura offline-first con 3 capas de degradación elegante           ║
 ║                                                                              ║
-║  Arquitectura de datos:                                                      ║
-║  • Banco Mundial (wbgapi)  → PIB, IED, energía                              ║
-║  • UN Comtrade API         → exportaciones críticas por commodity            ║
-║  • IMF Data API            → reservas de divisas y oro                       ║
-║  • Datos sintéticos robustos cuando las APIs no responden (offline-first)   ║
+║  Fórmula:                                                                    ║
+║    ICG = √(Apalancamiento^wL × Resiliencia^wR) / (1 + D/100) − Penalidad   ║
 ║                                                                              ║
 ║  Instalación:                                                                ║
-║      pip install streamlit plotly pandas numpy requests wbgapi               ║
+║    pip install streamlit plotly pandas numpy requests wbgapi                 ║
+║                                                                              ║
+║  API keys opcionales (.streamlit/secrets.toml):                             ║
+║    COMTRADE_KEY = "..."   # UN Comtrade >100 req/h                          ║
+║    NEWS_API_KEY = "..."   # NewsAPI.org — gratis hasta 100 req/día          ║
 ║                                                                              ║
 ║  Ejecución:                                                                  ║
-║      streamlit run icg_dashboard.py                                          ║
+║    streamlit run icg_dashboard.py                                            ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IMPORTACIONES
+# 0. IMPORTACIONES
 # ─────────────────────────────────────────────────────────────────────────────
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 import requests
-import json
-import time
-from typing import Optional, Dict, Tuple
+import re
+from datetime import datetime, timezone
+from typing import Optional, Dict, List, Tuple
 import warnings
 warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURACIÓN GLOBAL DE STREAMLIT
+# 1. CONFIGURACIÓN DE PÁGINA
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="ICG · Índice de Conversión Geoeconómica",
+    page_title="ICG · Índice de Conversión Geoeconómica v2.0",
     page_icon="🌐",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={"About": "ICG Dashboard v1.0 · Ciencia de Datos & Geopolítica"}
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ESTILOS CSS — Estética "Intelligence Terminal": fondo oscuro, tipografía
-# monoespaciada para métricas, acentos en ámbar y cian.
+# 2. ESTILOS — "Intelligence Terminal Dark" con acento ámbar/cian
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=DM+Sans:wght@300;400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;700&display=swap');
 
-/* ── Base ── */
 html, body, [class*="css"] {
     font-family: 'DM Sans', sans-serif;
     background-color: #080C14;
     color: #C8D6E5;
 }
 
-/* ── Header principal ── */
+/* Header */
 .icg-header {
-    background: linear-gradient(135deg, #0A1628 0%, #0D1F3C 50%, #091420 100%);
+    background: linear-gradient(135deg, #0A1628 0%, #0D1F3C 60%, #091420 100%);
     border: 1px solid #1E3A5F;
     border-radius: 12px;
-    padding: 28px 36px;
-    margin-bottom: 24px;
+    padding: 28px 36px 24px;
+    margin-bottom: 20px;
     position: relative;
     overflow: hidden;
 }
 .icg-header::before {
     content: '';
     position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 40px,
-        rgba(30, 58, 95, 0.15) 40px,
-        rgba(30, 58, 95, 0.15) 41px
-    );
+    inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 38px,
+        rgba(30,58,95,0.12) 38px, rgba(30,58,95,0.12) 39px);
+    pointer-events: none;
 }
 .icg-title {
     font-family: 'Space Mono', monospace;
-    font-size: 2rem;
+    font-size: 1.9rem;
     font-weight: 700;
     color: #E8F4FD;
     letter-spacing: -0.02em;
-    margin: 0;
+    margin: 0 0 4px;
+    position: relative;
 }
-.icg-subtitle {
+.icg-badge {
+    display: inline-block;
     font-family: 'Space Mono', monospace;
-    font-size: 0.75rem;
-    color: #4A9ECA;
-    letter-spacing: 0.15em;
+    font-size: 0.65rem;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
-    margin-top: 6px;
+    color: #4A9ECA;
+    margin-bottom: 10px;
+    position: relative;
 }
 .icg-formula {
     font-family: 'Space Mono', monospace;
-    font-size: 1.1rem;
+    font-size: 1rem;
     color: #F0B429;
-    background: rgba(240, 180, 41, 0.08);
+    background: rgba(240,180,41,0.07);
     border-left: 3px solid #F0B429;
-    padding: 10px 16px;
+    padding: 9px 14px;
     border-radius: 0 8px 8px 0;
-    margin-top: 16px;
+    margin-top: 14px;
     display: inline-block;
+    position: relative;
 }
 
-/* ── Tarjetas de métricas ── */
+/* Metric cards */
 .metric-card {
     background: linear-gradient(145deg, #0D1F3C, #091629);
     border: 1px solid #1E3A5F;
     border-radius: 10px;
-    padding: 20px;
+    padding: 18px;
     text-align: center;
-    transition: border-color 0.3s ease, transform 0.2s ease;
+    transition: border-color .25s, transform .2s;
 }
-.metric-card:hover {
-    border-color: #4A9ECA;
-    transform: translateY(-2px);
-}
+.metric-card:hover { border-color: #4A9ECA; transform: translateY(-2px); }
 .metric-value {
     font-family: 'Space Mono', monospace;
-    font-size: 2.4rem;
+    font-size: 2.2rem;
     font-weight: 700;
     color: #4ADE80;
     line-height: 1;
 }
 .metric-label {
-    font-size: 0.78rem;
+    font-size: 0.72rem;
     color: #6B8BA4;
     text-transform: uppercase;
     letter-spacing: 0.12em;
-    margin-top: 6px;
+    margin-top: 5px;
 }
 .metric-delta {
     font-family: 'Space Mono', monospace;
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     margin-top: 4px;
 }
 
-/* ── Sidebar ── */
+/* Sidebar */
 [data-testid="stSidebar"] {
     background-color: #060A10;
     border-right: 1px solid #1A3050;
 }
-[data-testid="stSidebar"] .stMarkdown h3 {
-    font-family: 'Space Mono', monospace;
-    color: #4A9ECA;
-    font-size: 0.85rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    border-bottom: 1px solid #1A3050;
-    padding-bottom: 8px;
-    margin-bottom: 12px;
-}
 
-/* ── Sliders y controles ── */
-.stSlider [data-baseweb="slider"] {
-    padding-top: 8px;
-}
-
-/* ── Status badges ── */
-.status-live { color: #4ADE80; }
-.status-cached { color: #F0B429; }
-.status-offline { color: #FF6B6B; }
-
-/* ── Tabla de países ── */
-.dataframe { font-size: 0.85rem !important; }
-
-/* ── Sección de tabs ── */
-.stTabs [data-baseweb="tab-list"] {
-    background-color: #0A1628;
+/* News card */
+.news-card {
+    background: #0A1628;
+    border: 1px solid #1E3A5F;
     border-radius: 8px;
-    padding: 4px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    transition: border-color .2s;
 }
-.stTabs [data-baseweb="tab"] {
+.news-card:hover { border-color: #4A9ECA; }
+.news-title { font-size: 0.85rem; color: #C8D6E5; font-weight: 500; line-height: 1.4; }
+.news-meta  { font-family: 'Space Mono', monospace; font-size: 0.7rem; color: #4A9ECA; margin-top: 5px; }
+.news-alert { color: #F0B429 !important; }
+.news-impact-badge {
+    display: inline-block;
     font-family: 'Space Mono', monospace;
-    font-size: 0.8rem;
-    color: #6B8BA4;
-    letter-spacing: 0.05em;
+    font-size: 0.65rem;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
 }
+.badge-high   { background: rgba(255,107,107,0.15); color: #FF6B6B; border: 1px solid #FF6B6B; }
+.badge-medium { background: rgba(240,180,41,0.15);  color: #F0B429; border: 1px solid #F0B429; }
+.badge-low    { background: rgba(74,158,202,0.15);  color: #4A9ECA; border: 1px solid #4A9ECA; }
 
-/* ── Alert boxes ── */
+/* Alert box */
 .alert-box {
-    background: rgba(240, 180, 41, 0.1);
-    border: 1px solid rgba(240, 180, 41, 0.4);
+    background: rgba(240,180,41,0.08);
+    border: 1px solid rgba(240,180,41,0.35);
     border-radius: 8px;
-    padding: 12px 16px;
-    font-size: 0.88rem;
+    padding: 11px 15px;
+    font-size: 0.87rem;
     color: #F0B429;
     margin: 8px 0;
+}
+
+/* Status */
+.status-live    { color: #4ADE80; }
+.status-offline { color: #FF6B6B; }
+
+/* Comparison panel */
+.compare-header {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.75rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #4A9ECA;
+    border-bottom: 1px solid #1A3050;
+    padding-bottom: 6px;
+    margin-bottom: 12px;
+}
+.win-badge {
+    display: inline-block;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(74,222,128,0.12);
+    color: #4ADE80;
+    border: 1px solid #4ADE80;
+    margin-left: 6px;
 }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECCIÓN 1: CAPA DE DATOS
-# Arquitectura "offline-first": intenta APIs reales → fallback a datos
-# sintéticos documentados. Cada función expone su fuente.
+# 3. CONSTANTES VISUALES
 # ─────────────────────────────────────────────────────────────────────────────
+ICG_COLORSCALE = [
+    [0.00, "#3D0000"], [0.18, "#7F1010"], [0.30, "#C84B11"],
+    [0.45, "#E8A020"], [0.62, "#A8C832"], [0.80, "#3CB87A"],
+    [1.00, "#00D4AA"],
+]
 
-class DataStatus:
-    """Rastrea el estado de cada fuente de datos."""
-    sources: Dict[str, str] = {}
+DARK_LAYOUT = dict(
+    paper_bgcolor="#080C14", plot_bgcolor="#0A1220",
+    font=dict(family="DM Sans, sans-serif", color="#C8D6E5", size=11),
+    xaxis=dict(gridcolor="#1A3050", zerolinecolor="#1A3050", linecolor="#1A3050"),
+    yaxis=dict(gridcolor="#1A3050", zerolinecolor="#1A3050", linecolor="#1A3050"),
+    legend=dict(bgcolor="#0D1F3C", bordercolor="#1E3A5F", borderwidth=1),
+    margin=dict(t=50, b=45, l=45, r=25),
+)
 
-    @classmethod
-    def set(cls, source: str, status: str):
-        cls.sources[source] = status
+RADAR_COLORS = ["#00D4AA", "#F0B429", "#FF6B6B", "#4A9ECA", "#A78BFA", "#F97316"]
 
-    @classmethod
-    def get_all(cls) -> Dict[str, str]:
-        return cls.sources
+DIMENSION_LABELS = {
+    "leverage":      "Apalancamiento",
+    "resilience":    "Resiliencia",
+    "dependence_inv":"Aut. Estratégica",
+    "icg":           "ICG Global",
+}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. CAPA DE DATOS — API BANCO MUNDIAL
+# ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_worldbank_data(indicators: Dict[str, str],
-                         countries: list,
-                         year: int = 2022) -> pd.DataFrame:
+def fetch_worldbank(indicator: str, year: int = 2022) -> Dict[str, float]:
     """
-    Extrae indicadores del Banco Mundial via wbgapi.
-    Si falla, intenta endpoint REST directo. Si falla, usa datos proxy.
-
-    Indicadores clave:
-    - NY.GDP.MKTP.CD   : PIB en USD corrientes
-    - BN.KLT.DINV.CD.WD: IED neta (USD)
-    - EG.IMP.CONS.ZS   : Importaciones de energía (% uso total)
-    - AG.SRF.TOTL.K2   : Tierra agrícola (km²) — proxy autosuf. alimentaria
-    - TX.VAL.FUEL.ZS.UN: Exportaciones de combustibles (% exportaciones totales)
-    - FI.RES.TOTL.CD   : Reservas totales incluido oro (USD)
+    Extrae un indicador del Banco Mundial vía endpoint REST público.
+    Retorna dict {iso3: valor}. No requiere API key.
     """
+    url = (f"https://api.worldbank.org/v2/country/all/indicator/{indicator}"
+           f"?format=json&date={year}&per_page=300&mrv=1")
     try:
-        import wbgapi as wb
-        df_list = []
-        for code, name in indicators.items():
-            try:
-                data = wb.data.DataFrame(code, countries, mrv=1, skipBlanks=True)
-                if not data.empty:
-                    data = data.reset_index()
-                    data.columns = ['iso3'] + [str(c) for c in data.columns[1:]]
-                    data['indicator'] = name
-                    df_list.append(data)
-            except Exception:
-                continue
-        if df_list:
-            DataStatus.set("Banco Mundial", "LIVE")
-            return pd.concat(df_list, ignore_index=True)
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-    # Fallback: endpoint REST del Banco Mundial
-    try:
-        results = {}
-        for code, name in indicators.items():
-            url = (f"https://api.worldbank.org/v2/country/all/indicator/{code}"
-                   f"?format=json&date={year}&per_page=300&mrv=1")
-            r = requests.get(url, timeout=8)
-            if r.status_code == 200:
-                payload = r.json()
-                if len(payload) > 1 and payload[1]:
-                    for entry in payload[1]:
-                        iso = entry.get("countryiso3code", "")
-                        val = entry.get("value")
-                        if iso and val is not None:
-                            results.setdefault(iso, {})[name] = float(val)
-        if results:
-            df = pd.DataFrame.from_dict(results, orient='index').reset_index()
-            df.rename(columns={'index': 'iso3'}, inplace=True)
-            DataStatus.set("Banco Mundial", "REST")
-            return df
-    except Exception:
-        pass
-
-    DataStatus.set("Banco Mundial", "OFFLINE")
-    return pd.DataFrame()
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_comtrade_exports(reporter_iso: str,
-                            commodity_code: str = "27",
-                            year: int = 2022) -> Optional[float]:
-    """
-    UN Comtrade API — exportaciones de commodities críticos.
-    HS 27 = Combustibles minerales, aceites minerales.
-    HS 26 = Minerales metalíferos.
-    HS 84 = Maquinaria (electrónica crítica).
-
-    Endpoint público (sin API key) tiene límite de 100 req/hora.
-    Con API key premium: 10,000 req/hora.
-    """
-    try:
-        url = (f"https://comtradeapi.un.org/public/v1/preview/C/A/HS?"
-               f"reporterCode={reporter_iso}&period={year}"
-               f"&cmdCode={commodity_code}&flowCode=X&partnerCode=0"
-               f"&partner2Code=0&customsCode=C00&motCode=0&aggregateBy=None"
-               f"&breakdownMode=plus&countOnly=false&includeDesc=true")
-        headers = {"Ocp-Apim-Subscription-Key": st.secrets.get("COMTRADE_KEY", "")}
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("data"):
-                total = sum(d.get("primaryValue", 0) for d in data["data"])
-                DataStatus.set("UN Comtrade", "LIVE")
-                return total
-    except Exception:
-        pass
-    DataStatus.set("UN Comtrade", "OFFLINE")
-    return None
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_imf_reserves(country_code: str) -> Optional[float]:
-    """
-    IMF Data API — Reservas de divisas y oro.
-    Endpoint: http://dataservices.imf.org/REST/SDMX_JSON.svc/
-    Dataset: IFS (International Financial Statistics)
-    Indicador: RESERVES.FX (Foreign Exchange Reserves)
-    """
-    try:
-        url = (f"http://dataservices.imf.org/REST/SDMX_JSON.svc/"
-               f"CompactData/IFS/Q.{country_code}.RESERVES.FX?"
-               f"startPeriod=2022&endPeriod=2022")
         r = requests.get(url, timeout=8)
         if r.status_code == 200:
-            data = r.json()
-            series = (data.get("CompactData", {})
-                         .get("DataSet", {})
-                         .get("Series", {}))
-            if series:
-                obs = series.get("Obs", [])
-                if isinstance(obs, list) and obs:
-                    val = obs[-1].get("@OBS_VALUE")
-                    if val:
-                        DataStatus.set("IMF", "LIVE")
-                        return float(val) * 1e6  # millones → USD
+            payload = r.json()
+            if len(payload) > 1 and payload[1]:
+                return {
+                    e["countryiso3code"]: float(e["value"])
+                    for e in payload[1]
+                    if e.get("countryiso3code") and e.get("value") is not None
+                }
     except Exception:
         pass
-    DataStatus.set("IMF", "OFFLINE")
-    return None
+    return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECCIÓN 2: BASE DE DATOS GEOPOLÍTICA
-# Datos sintéticos documentados — proxy de fuentes públicas verificables.
-# Cada variable referencia su fuente primaria recomendada.
+# 5. CAPA DE DATOS — NOTICIAS EN VIVO (NewsAPI)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_geopolitical_database() -> pd.DataFrame:
+SANCTION_KEYWORDS = [
+    "sanction", "sanctions", "sanctioned", "embargo", "blacklist",
+    "OFAC", "export control", "trade ban", "asset freeze",
+    "tariff", "trade war", "countermeasure",
+]
+
+TARIFF_KEYWORDS = [
+    "tariff", "tariffs", "trade war", "import duty", "customs",
+    "protectionism", "trade barrier",
+]
+
+COUNTRY_MAP_NEWS = {
+    "china": "China", "chinese": "China", "beijing": "China",
+    "russia": "Russia", "russian": "Russia", "moscow": "Russia",
+    "iran": "Iran", "iranian": "Iran", "tehran": "Iran",
+    "north korea": "North Korea", "pyongyang": "North Korea",
+    "venezuela": "Venezuela", "caracas": "Venezuela",
+    "turkey": "Turkey", "turkish": "Turkey", "ankara": "Turkey",
+    "saudi": "Saudi Arabia", "riyadh": "Saudi Arabia",
+    "mexico": "Mexico", "mexican": "Mexico",
+    "canada": "Canada", "canadian": "Canada",
+    "india": "India", "indian": "India",
+    "germany": "Germany", "german": "Germany",
+    "japan": "Japan", "japanese": "Japan",
+}
+
+
+@st.cache_data(ttl=900, show_spinner=False)   # caché 15 min
+def fetch_news_live(api_key: str, query: str = "sanctions tariffs trade war",
+                    page_size: int = 20) -> List[Dict]:
     """
-    Construye la base de datos geopolítica para el ICG.
+    Consulta NewsAPI.org por noticias recientes de sanciones/aranceles.
+    Endpoint: https://newsapi.org/v2/everything
+    Gratis hasta 100 peticiones/día. Requiere registro en newsapi.org.
 
-    Variables por país (ca. 2022-2023, fuentes documentadas):
-
-    export_critical_bn:
-        Exportaciones críticas en USD bn (combustibles + minerales + semiconductores)
-        Fuente: UN Comtrade HS27 + HS26 + HS84 / WITS World Bank
-        Proxy verificable: https://comtrade.un.org/data/
-
-    forex_reserves_bn:
-        Reservas de divisas + oro en USD bn
-        Fuente: IMF IFS / World Bank (FI.RES.TOTL.CD)
-        Proxy verificable: https://data.worldbank.org/indicator/FI.RES.TOTL.CD
-
-    energy_import_pct:
-        Importaciones netas de energía como % del consumo total
-        Fuente: World Bank WDI (EG.IMP.CONS.ZS)
-        Nota: valor negativo = exportador neto (mayor resiliencia)
-        Proxy verificable: https://data.worldbank.org/indicator/EG.IMP.CONS.ZS
-
-    food_self_sufficiency:
-        Índice 0-100 de autosuficiencia alimentaria (producción/consumo doméstico)
-        Fuente: FAO Food Balance Sheets / USDA PSD
-        Proxy: https://www.fao.org/faostat/en/#data/FBS
-
-    gdp_bn:
-        PIB en USD bn corrientes 2022
-        Fuente: World Bank WDI (NY.GDP.MKTP.CD)
-        Verificado: https://data.worldbank.org/indicator/NY.GDP.MKTP.CD
-
-    us_export_pct:
-        % de exportaciones totales dirigidas a EE.UU.
-        Fuente: WITS/World Bank partner share 2022
-        Verificado: https://wits.worldbank.org
-
-    sanctions_score:
-        Índice de exposición a sanciones 0-10 (0=sin sanciones, 10=máximo)
-        Fuente: OFAC SDN List / EU Sanctions Map / UN Security Council
-        Proxy: https://sanctionsmap.eu / https://ofac.treasury.gov
+    Retorna lista de artículos con campos:
+        title, source, publishedAt, url, country_mentions, impact_score
     """
+    if not api_key:
+        return []
+    try:
+        url = "https://newsapi.org/v2/everything"
+        params = {
+            "q": query,
+            "language": "en",
+            "sortBy": "publishedAt",
+            "pageSize": page_size,
+            "apiKey": api_key,
+        }
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code == 200:
+            articles = r.json().get("articles", [])
+            enriched = []
+            for a in articles:
+                text = (a.get("title", "") + " " + (a.get("description") or "")).lower()
+                # Detectar países mencionados
+                countries_found = []
+                for kw, country in COUNTRY_MAP_NEWS.items():
+                    if kw in text and country not in countries_found:
+                        countries_found.append(country)
+                # Score de impacto (0-3) basado en keywords
+                sanc_hits   = sum(1 for k in SANCTION_KEYWORDS if k.lower() in text)
+                tariff_hits = sum(1 for k in TARIFF_KEYWORDS   if k.lower() in text)
+                impact = min(3, sanc_hits + tariff_hits)
+                enriched.append({
+                    "title":    a.get("title", "Sin título"),
+                    "source":   a.get("source", {}).get("name", "Desconocido"),
+                    "published": a.get("publishedAt", ""),
+                    "url":      a.get("url", "#"),
+                    "countries": countries_found,
+                    "sanction_hits": sanc_hits,
+                    "tariff_hits":   tariff_hits,
+                    "impact":   impact,   # 0=bajo, 1=medio, 2-3=alto
+                })
+            return enriched
+    except Exception:
+        pass
+    return []
 
+
+def compute_news_sanctions_delta(articles: List[Dict]) -> Dict[str, float]:
+    """
+    Calcula el ajuste de sanctions_score para cada país basado en noticias recientes.
+
+    Lógica:
+    - Cada artículo con mención de un país suma un delta proporcional a su impact score.
+    - Artículos recientes (<6h) pesan el doble.
+    - Delta máximo acumulado por país: +2.5 puntos sobre la escala [0,10].
+    - El delta es ADITIVO sobre el score base de la base de datos.
+
+    Retorna: dict {country: delta_sanctions}
+    """
+    now = datetime.now(timezone.utc)
+    deltas: Dict[str, float] = {}
+
+    for article in articles:
+        pub_str  = article.get("published", "")
+        impact   = article.get("impact", 0)
+        countries = article.get("countries", [])
+
+        if not countries or impact == 0:
+            continue
+
+        # Peso temporal (artículos más recientes pesan más)
+        weight = 1.0
+        try:
+            pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+            hours_ago = (now - pub_dt).total_seconds() / 3600
+            weight = 2.0 if hours_ago < 6 else (1.5 if hours_ago < 24 else 1.0)
+        except Exception:
+            pass
+
+        for country in countries:
+            contribution = (impact / 3) * weight * 0.8   # max ~2.4 por artículo top
+            deltas[country] = min(2.5, deltas.get(country, 0.0) + contribution)
+
+    return deltas
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. BASE DE DATOS GEOPOLÍTICA (22 PAÍSES, ca. 2022)
+# ─────────────────────────────────────────────────────────────────────────────
+def build_database() -> pd.DataFrame:
+    """
+    Proxy documentado. Variables y fuentes primarias en comentarios inline.
+    Reemplazable con fetch_worldbank() cuando hay conexión.
+
+    Campos:
+      export_critical_bn  : UN Comtrade HS27+HS26+HS84
+      forex_reserves_bn   : IMF IFS / WB FI.RES.TOTL.CD
+      energy_import_pct   : WB EG.IMP.CONS.ZS (negativo = exportador neto)
+      food_self_sufficiency: FAO FBS / USDA PSD (>100 = exportador neto)
+      gdp_bn              : WB NY.GDP.MKTP.CD 2022
+      us_export_pct       : WITS partner share 2022-2023
+      sanctions_score     : OFAC + EU Sanctions Map [0-10]
+    """
     data = {
-        # ── POTENCIAS PRINCIPALES ──────────────────────────────────────────
-        "United States": {
-            "iso3": "USA", "region": "América del Norte",
-            "export_critical_bn": 285.0,   # EIA 2022: petróleo+gas+minerales
-            "forex_reserves_bn": 246.0,    # Fed/Treasury 2022
-            "energy_import_pct": -12.0,    # Exportador neto (EIA 2022)
-            "food_self_sufficiency": 130.0, # USDA: 130% autosuficiencia
-            "gdp_bn": 25464.0,             # WB 2022
-            "us_export_pct": 0.0,          # Referencia
-            "sanctions_score": 0.0,
-            "us_fta": True,                # Tratado con sí mismo
-            "bloc": "Occidental",
-        },
-        "China": {
-            "iso3": "CHN", "region": "Asia Oriental",
-            "export_critical_bn": 580.0,   # Comtrade: electrónica+minerales raros
-            "forex_reserves_bn": 3200.0,   # PBoC 2022: mayor reserva mundial
-            "energy_import_pct": 18.0,     # WB EG.IMP.CONS.ZS 2020
-            "food_self_sufficiency": 95.0, # FAO 2022
-            "gdp_bn": 17963.0,             # WB 2022
-            "us_export_pct": 16.8,         # WITS 2022
-            "sanctions_score": 3.5,        # Sanciones parciales chips/tech
-            "us_fta": False,
-            "bloc": "BRICS",
-        },
-        "Russia": {
-            "iso3": "RUS", "region": "Europa del Este",
-            "export_critical_bn": 480.0,   # Comtrade HS27: petróleo+gas 2021
-            "forex_reserves_bn": 640.0,    # CBR 2021 (pre-congelamiento)
-            "energy_import_pct": -87.0,    # Exportador masivo neto
-            "food_self_sufficiency": 145.0, # USDA: trigo, cereales
-            "gdp_bn": 2245.0,              # WB 2022
-            "us_export_pct": 1.2,          # Mínimo post-sanciones
-            "sanctions_score": 9.5,        # Sanciones OFAC máximas
-            "us_fta": False,
-            "bloc": "BRICS",
-        },
-        "Iran": {
-            "iso3": "IRN", "region": "Oriente Medio",
-            "export_critical_bn": 45.0,    # EIA/Comtrade: ~40-50bn (mercado informal)
-            "forex_reserves_bn": 15.0,     # Estimado IMF (cuentas congeladas)
-            "energy_import_pct": -220.0,   # 4° reserva petróleo mundial (BP)
-            "food_self_sufficiency": 72.0, # FAO 2022: déficit agrícola
-            "gdp_bn": 367.0,               # IMF WEO 2022 (PPP ajustado)
-            "us_export_pct": 0.0,          # Embargo total desde 1979/2018
-            "sanctions_score": 10.0,       # Sanciones OFAC máximas + secundarias
-            "us_fta": False,
-            "bloc": "Eje resistencia",
-        },
-        "Saudi Arabia": {
-            "iso3": "SAU", "region": "Oriente Medio",
-            "export_critical_bn": 320.0,   # OPEC: petróleo+gas 2022
-            "forex_reserves_bn": 478.0,    # SAMA 2022
-            "energy_import_pct": -350.0,   # 2° exportador mundial petróleo
-            "food_self_sufficiency": 42.0, # FAO: alta dependencia importaciones
-            "gdp_bn": 1109.0,              # WB 2022
-            "us_export_pct": 8.5,          # WITS 2022
-            "sanctions_score": 1.0,        # Sanciones individuales post-Khashoggi
-            "us_fta": False,
-            "bloc": "G20",
-        },
-        # ── POTENCIAS EMERGENTES ───────────────────────────────────────────
-        "India": {
-            "iso3": "IND", "region": "Asia del Sur",
-            "export_critical_bn": 95.0,    # Comtrade: productos farmacéuticos+TI+commodities
-            "forex_reserves_bn": 562.0,    # RBI 2022
-            "energy_import_pct": 38.0,     # WB 2020: importador neto
-            "food_self_sufficiency": 102.0, # FAO: autosuficiente en arroz/trigo
-            "gdp_bn": 3385.0,              # WB 2022
-            "us_export_pct": 18.2,         # WITS 2022
-            "sanctions_score": 0.5,        # Vigilancia por compra petróleo ruso
-            "us_fta": False,
-            "bloc": "Quad/BRICS",
-        },
-        "Brazil": {
-            "iso3": "BRA", "region": "América del Sur",
-            "export_critical_bn": 110.0,   # Comtrade: soja+hierro+petróleo
-            "forex_reserves_bn": 325.0,    # BCB 2022
-            "energy_import_pct": -3.0,     # Leve exportador neto (pre-sal)
-            "food_self_sufficiency": 190.0, # USDA: gran exportador agrícola
-            "gdp_bn": 1920.0,              # WB 2022
-            "us_export_pct": 11.0,         # WITS 2022
-            "sanctions_score": 0.0,
-            "us_fta": False,
-            "bloc": "BRICS/G20",
-        },
-        "Germany": {
-            "iso3": "DEU", "region": "Europa Occidental",
-            "export_critical_bn": 145.0,   # Comtrade: maquinaria+químicos+vehículos
-            "forex_reserves_bn": 295.0,    # Bundesbank 2022
-            "energy_import_pct": 61.0,     # WB: alta dependencia (gas ruso)
-            "food_self_sufficiency": 93.0, # FAO 2022
-            "gdp_bn": 4072.0,              # WB 2022
-            "us_export_pct": 9.5,          # WITS 2022
-            "sanctions_score": 0.0,
-            "us_fta": True,                # Bilateral TTIP (negociación) / OTAN
-            "bloc": "Occidental/UE",
-        },
-        "Japan": {
-            "iso3": "JPN", "region": "Asia Oriental",
-            "export_critical_bn": 120.0,   # Comtrade: semiconductores+vehículos
-            "forex_reserves_bn": 1291.0,   # MoF Japón 2022: 2° mayor reserva
-            "energy_import_pct": 85.0,     # WB: alta dependencia (importa 90% energía)
-            "food_self_sufficiency": 38.0, # MAFF Japón: baja autosuficiencia
-            "gdp_bn": 4231.0,              # WB 2022
-            "us_export_pct": 19.0,         # WITS 2022
-            "sanctions_score": 0.0,
-            "us_fta": True,                # US-Japan Trade Agreement 2019
-            "bloc": "Occidental/Quad",
-        },
-        "Mexico": {
-            "iso3": "MEX", "region": "América del Norte",
-            "export_critical_bn": 55.0,    # Comtrade: petróleo+manufacturas
-            "forex_reserves_bn": 201.0,    # Banxico 2022
-            "energy_import_pct": 22.0,     # WB 2020
-            "food_self_sufficiency": 85.0, # FAO 2022
-            "gdp_bn": 1294.0,              # WB 2022
-            "us_export_pct": 79.95,        # WITS 2023 (verificado)
-            "sanctions_score": 0.0,
-            "us_fta": True,                # T-MEC/USMCA 2020
-            "bloc": "América del Norte",
-        },
-        "North Korea": {
-            "iso3": "PRK", "region": "Asia Oriental",
-            "export_critical_bn": 1.8,     # Estimado CIA/ONU (sanciones)
-            "forex_reserves_bn": 2.0,      # Estimado (opaco)
-            "energy_import_pct": 25.0,     # Dependiente de China
-            "food_self_sufficiency": 70.0, # WFP: déficit crónico
-            "gdp_bn": 18.0,                # CIA World Factbook estimado
-            "us_export_pct": 0.0,          # Embargo total
-            "sanctions_score": 10.0,       # Máximo CSNU
-            "us_fta": False,
-            "bloc": "Autárquico",
-        },
-        "Venezuela": {
-            "iso3": "VEN", "region": "América del Sur",
-            "export_critical_bn": 12.0,    # OPEC: colapsado vs 90bn (2012)
-            "forex_reserves_bn": 9.0,      # BCV 2022 (mayoría en oro)
-            "energy_import_pct": -180.0,   # Exportador neto (5ª reserva mundial)
-            "food_self_sufficiency": 55.0, # FAO: crisis alimentaria
-            "gdp_bn": 98.0,                # IMF WEO 2022
-            "us_export_pct": 2.0,          # Post-sanciones
-            "sanctions_score": 8.5,        # OFAC Executive Orders
-            "us_fta": False,
-            "bloc": "ALBA",
-        },
-        "Turkey": {
-            "iso3": "TUR", "region": "Oriente Medio/Europa",
-            "export_critical_bn": 35.0,    # Comtrade: textiles+acero+drones
-            "forex_reserves_bn": 128.0,    # TCMB 2022
-            "energy_import_pct": 72.0,     # WB: alta dependencia energética
-            "food_self_sufficiency": 97.0, # FAO 2022
-            "gdp_bn": 906.0,               # WB 2022
-            "us_export_pct": 6.5,          # WITS 2022
-            "sanctions_score": 1.5,        # S-400/CAATSA riesgo
-            "us_fta": False,
-            "bloc": "OTAN (ambiguo)",
-        },
-        "South Korea": {
-            "iso3": "KOR", "region": "Asia Oriental",
-            "export_critical_bn": 175.0,   # Comtrade: semis+displays+EV baterías
-            "forex_reserves_bn": 423.0,    # BOK 2022
-            "energy_import_pct": 78.0,     # WB: importa casi toda energía
-            "food_self_sufficiency": 45.0, # MAFRA: baja autosuficiencia
-            "gdp_bn": 1665.0,              # WB 2022
-            "us_export_pct": 16.1,         # WITS 2022
-            "sanctions_score": 0.0,
-            "us_fta": True,                # KORUS FTA 2012
-            "bloc": "Occidental/Quad+",
-        },
-        "Canada": {
-            "iso3": "CAN", "region": "América del Norte",
-            "export_critical_bn": 210.0,   # NRCan: energía+minerales+agrícola
-            "forex_reserves_bn": 106.0,    # BoC 2022
-            "energy_import_pct": -58.0,    # Exportador neto importante
-            "food_self_sufficiency": 185.0, # USDA: gran exportador
-            "gdp_bn": 2140.0,              # WB 2022
-            "us_export_pct": 73.2,         # WITS 2022 (alta dependencia)
-            "sanctions_score": 0.0,
-            "us_fta": True,                # T-MEC/USMCA 2020
-            "bloc": "Occidental",
-        },
-        "Australia": {
-            "iso3": "AUS", "region": "Oceanía",
-            "export_critical_bn": 185.0,   # DFAT: mineral de hierro+GNL+carbón
-            "forex_reserves_bn": 58.0,     # RBA 2022
-            "energy_import_pct": -45.0,    # Exportador neto
-            "food_self_sufficiency": 250.0, # ABARES: gran exportador
-            "gdp_bn": 1724.0,              # WB 2022
-            "us_export_pct": 5.0,          # WITS 2022
-            "sanctions_score": 0.0,
-            "us_fta": True,                # AUSFTA 2005
-            "bloc": "Occidental/Quad",
-        },
-        "UAE": {
-            "iso3": "ARE", "region": "Oriente Medio",
-            "export_critical_bn": 165.0,   # MOE: petróleo+aluminio+reexportaciones
-            "forex_reserves_bn": 188.0,    # CBUAE 2022
-            "energy_import_pct": -280.0,   # Gran exportador neto
-            "food_self_sufficiency": 25.0, # FAO: muy dependiente importaciones
-            "gdp_bn": 509.0,               # WB 2022
-            "us_export_pct": 4.8,          # WITS 2022
-            "sanctions_score": 0.5,
-            "us_fta": False,
-            "bloc": "G20",
-        },
-        "South Africa": {
-            "iso3": "ZAF", "region": "África Subsahariana",
-            "export_critical_bn": 52.0,    # Comtrade: oro+platino+mineral
-            "forex_reserves_bn": 60.0,     # SARB 2022
-            "energy_import_pct": 15.0,     # WB
-            "food_self_sufficiency": 98.0, # FAO 2022
-            "gdp_bn": 406.0,               # WB 2022
-            "us_export_pct": 8.9,          # WITS 2022
-            "sanctions_score": 0.5,        # Ejercicios militares con Rusia
-            "us_fta": False,
-            "bloc": "BRICS",
-        },
-        "France": {
-            "iso3": "FRA", "region": "Europa Occidental",
-            "export_critical_bn": 85.0,    # Comtrade: armas+aeronáutica+lujo
-            "forex_reserves_bn": 242.0,    # Banque de France 2022
-            "energy_import_pct": 45.0,     # WB: nuclear reduce dependencia
-            "food_self_sufficiency": 122.0, # FranceAgriMer 2022
-            "gdp_bn": 2784.0,              # WB 2022
-            "us_export_pct": 7.5,          # WITS 2022
-            "sanctions_score": 0.0,
-            "us_fta": True,                # OTAN + bilateral
-            "bloc": "Occidental/UE",
-        },
-        "Nigeria": {
-            "iso3": "NGA", "region": "África Subsahariana",
-            "export_critical_bn": 48.0,    # NNPC: petróleo 2022
-            "forex_reserves_bn": 38.0,     # CBN 2022
-            "energy_import_pct": -95.0,    # Gran exportador neto petróleo
-            "food_self_sufficiency": 82.0, # FAO 2022
-            "gdp_bn": 477.0,               # WB 2022
-            "us_export_pct": 6.5,          # WITS 2022 (AGOA)
-            "sanctions_score": 0.5,
-            "us_fta": False,
-            "bloc": "África/G20",
-        },
-        "Indonesia": {
-            "iso3": "IDN", "region": "Asia Sudoriental",
-            "export_critical_bn": 72.0,    # Comtrade: carbón+níquel+palma
-            "forex_reserves_bn": 137.0,    # BI 2022
-            "energy_import_pct": -12.0,    # Leve exportador neto
-            "food_self_sufficiency": 88.0, # BPS 2022
-            "gdp_bn": 1319.0,              # WB 2022
-            "us_export_pct": 9.8,          # WITS 2022
-            "sanctions_score": 0.0,
-            "us_fta": False,
-            "bloc": "G20/ASEAN",
-        },
-        "Poland": {
-            "iso3": "POL", "region": "Europa del Este",
-            "export_critical_bn": 28.0,    # Comtrade: maquinaria+textiles+alimentos
-            "forex_reserves_bn": 168.0,    # NBP 2022
-            "energy_import_pct": 48.0,     # WB: transición post-carbón ruso
-            "food_self_sufficiency": 108.0, # FAO 2022
-            "gdp_bn": 688.0,               # WB 2022
-            "us_export_pct": 3.1,          # WITS 2022
-            "sanctions_score": 0.0,
-            "us_fta": True,                # OTAN + bilateral
-            "bloc": "Occidental/UE",
-        },
-        "Kazakhstan": {
-            "iso3": "KAZ", "region": "Asia Central",
-            "export_critical_bn": 65.0,    # Comtrade: petróleo+uranio+metales
-            "forex_reserves_bn": 94.0,     # NBK 2022
-            "energy_import_pct": -155.0,   # Exportador masivo
-            "food_self_sufficiency": 112.0, # FAO: trigo+cebada
-            "gdp_bn": 220.0,               # WB 2022
-            "us_export_pct": 3.5,          # WITS 2022
-            "sanctions_score": 1.0,        # Riesgo sanciones secundarias
-            "us_fta": False,
-            "bloc": "OCS/CSTO",
-        },
+        "United States": dict(iso3="USA", region="América del Norte",
+            export_critical_bn=285, forex_reserves_bn=246,  energy_import_pct=-12,
+            food_self_sufficiency=130, gdp_bn=25464, us_export_pct=0.0,  sanctions_score=0.0,
+            bloc="Occidental"),
+        "China": dict(iso3="CHN", region="Asia Oriental",
+            export_critical_bn=580, forex_reserves_bn=3200, energy_import_pct=18,
+            food_self_sufficiency=95,  gdp_bn=17963, us_export_pct=16.8, sanctions_score=3.5,
+            bloc="BRICS"),
+        "Russia": dict(iso3="RUS", region="Europa del Este",
+            export_critical_bn=480, forex_reserves_bn=640,  energy_import_pct=-87,
+            food_self_sufficiency=145, gdp_bn=2245,  us_export_pct=1.2,  sanctions_score=9.5,
+            bloc="BRICS"),
+        "Iran": dict(iso3="IRN", region="Oriente Medio",
+            export_critical_bn=45,  forex_reserves_bn=15,   energy_import_pct=-220,
+            food_self_sufficiency=72,  gdp_bn=367,   us_export_pct=0.0,  sanctions_score=10.0,
+            bloc="Eje resistencia"),
+        "Saudi Arabia": dict(iso3="SAU", region="Oriente Medio",
+            export_critical_bn=320, forex_reserves_bn=478,  energy_import_pct=-350,
+            food_self_sufficiency=42,  gdp_bn=1109,  us_export_pct=8.5,  sanctions_score=1.0,
+            bloc="G20"),
+        "India": dict(iso3="IND", region="Asia del Sur",
+            export_critical_bn=95,  forex_reserves_bn=562,  energy_import_pct=38,
+            food_self_sufficiency=102, gdp_bn=3385,  us_export_pct=18.2, sanctions_score=0.5,
+            bloc="Quad/BRICS"),
+        "Brazil": dict(iso3="BRA", region="América del Sur",
+            export_critical_bn=110, forex_reserves_bn=325,  energy_import_pct=-3,
+            food_self_sufficiency=190, gdp_bn=1920,  us_export_pct=11.0, sanctions_score=0.0,
+            bloc="BRICS/G20"),
+        "Germany": dict(iso3="DEU", region="Europa Occidental",
+            export_critical_bn=145, forex_reserves_bn=295,  energy_import_pct=61,
+            food_self_sufficiency=93,  gdp_bn=4072,  us_export_pct=9.5,  sanctions_score=0.0,
+            bloc="Occidental/UE"),
+        "Japan": dict(iso3="JPN", region="Asia Oriental",
+            export_critical_bn=120, forex_reserves_bn=1291, energy_import_pct=85,
+            food_self_sufficiency=38,  gdp_bn=4231,  us_export_pct=19.0, sanctions_score=0.0,
+            bloc="Occidental/Quad"),
+        "Mexico": dict(iso3="MEX", region="América del Norte",
+            export_critical_bn=55,  forex_reserves_bn=201,  energy_import_pct=22,
+            food_self_sufficiency=85,  gdp_bn=1294,  us_export_pct=79.95, sanctions_score=0.0,
+            bloc="América del Norte"),
+        "Canada": dict(iso3="CAN", region="América del Norte",
+            export_critical_bn=210, forex_reserves_bn=106,  energy_import_pct=-58,
+            food_self_sufficiency=185, gdp_bn=2140,  us_export_pct=73.2, sanctions_score=0.0,
+            bloc="Occidental"),
+        "Australia": dict(iso3="AUS", region="Oceanía",
+            export_critical_bn=185, forex_reserves_bn=58,   energy_import_pct=-45,
+            food_self_sufficiency=250, gdp_bn=1724,  us_export_pct=5.0,  sanctions_score=0.0,
+            bloc="Occidental/Quad"),
+        "South Korea": dict(iso3="KOR", region="Asia Oriental",
+            export_critical_bn=175, forex_reserves_bn=423,  energy_import_pct=78,
+            food_self_sufficiency=45,  gdp_bn=1665,  us_export_pct=16.1, sanctions_score=0.0,
+            bloc="Occidental"),
+        "France": dict(iso3="FRA", region="Europa Occidental",
+            export_critical_bn=85,  forex_reserves_bn=242,  energy_import_pct=45,
+            food_self_sufficiency=122, gdp_bn=2784,  us_export_pct=7.5,  sanctions_score=0.0,
+            bloc="Occidental/UE"),
+        "UAE": dict(iso3="ARE", region="Oriente Medio",
+            export_critical_bn=165, forex_reserves_bn=188,  energy_import_pct=-280,
+            food_self_sufficiency=25,  gdp_bn=509,   us_export_pct=4.8,  sanctions_score=0.5,
+            bloc="G20"),
+        "Turkey": dict(iso3="TUR", region="Europa/Oriente Medio",
+            export_critical_bn=35,  forex_reserves_bn=128,  energy_import_pct=72,
+            food_self_sufficiency=97,  gdp_bn=906,   us_export_pct=6.5,  sanctions_score=1.5,
+            bloc="OTAN (ambiguo)"),
+        "South Africa": dict(iso3="ZAF", region="África Subsahariana",
+            export_critical_bn=52,  forex_reserves_bn=60,   energy_import_pct=15,
+            food_self_sufficiency=98,  gdp_bn=406,   us_export_pct=8.9,  sanctions_score=0.5,
+            bloc="BRICS"),
+        "Indonesia": dict(iso3="IDN", region="Asia Sudoriental",
+            export_critical_bn=72,  forex_reserves_bn=137,  energy_import_pct=-12,
+            food_self_sufficiency=88,  gdp_bn=1319,  us_export_pct=9.8,  sanctions_score=0.0,
+            bloc="G20/ASEAN"),
+        "Poland": dict(iso3="POL", region="Europa del Este",
+            export_critical_bn=28,  forex_reserves_bn=168,  energy_import_pct=48,
+            food_self_sufficiency=108, gdp_bn=688,   us_export_pct=3.1,  sanctions_score=0.0,
+            bloc="Occidental/UE"),
+        "North Korea": dict(iso3="PRK", region="Asia Oriental",
+            export_critical_bn=1.8, forex_reserves_bn=2,    energy_import_pct=25,
+            food_self_sufficiency=70,  gdp_bn=18,    us_export_pct=0.0,  sanctions_score=10.0,
+            bloc="Autárquico"),
+        "Venezuela": dict(iso3="VEN", region="América del Sur",
+            export_critical_bn=12,  forex_reserves_bn=9,    energy_import_pct=-180,
+            food_self_sufficiency=55,  gdp_bn=98,    us_export_pct=2.0,  sanctions_score=8.5,
+            bloc="ALBA"),
+        "Kazakhstan": dict(iso3="KAZ", region="Asia Central",
+            export_critical_bn=65,  forex_reserves_bn=94,   energy_import_pct=-155,
+            food_self_sufficiency=112, gdp_bn=220,   us_export_pct=3.5,  sanctions_score=1.0,
+            bloc="OCS/CSTO"),
     }
-
-    rows = []
-    for country, vals in data.items():
-        vals["country"] = country
-        rows.append(vals)
-
-    df = pd.DataFrame(rows)
-    return df
+    rows = [{"country": k, **v} for k, v in data.items()]
+    return pd.DataFrame(rows)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECCIÓN 3: CÁLCULO DEL ICG
-# ICG = (Apalancamiento × Resiliencia) / Dependencia_Externa
+# 7. MOTOR ICG — FÓRMULA CALIBRADA v3 (ÚNICA DEFINICIÓN)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _norm(s: pd.Series) -> pd.Series:
+    """Min-max normalización a [0, 100]. Segura ante series constantes."""
+    mn, mx = s.min(), s.max()
+    if mx == mn:
+        return pd.Series(50.0, index=s.index)
+    return (s - mn) / (mx - mn) * 100
+
 
 def calculate_leverage(df: pd.DataFrame) -> pd.Series:
     """
-    Apalancamiento = f(exportaciones críticas, reservas de divisas, penalidad sanciones)
+    Apalancamiento = capacidad de proyectar influencia económica.
 
-    Componentes:
-    1. Export Score : ln(export_critical_bn + 1) normalizado a [0,100]
-       Fuente: UN Comtrade HS27+HS26+HS84 (proxy: build_geopolitical_database)
-    2. Forex Score  : ln(forex_reserves_bn + 1) normalizado a [0,100]
-       Fuente: IMF IFS / World Bank FI.RES.TOTL.CD
-    3. Sanction Penalty: sanciones activas reducen el apalancamiento efectivo
-       porque limitan el acceso a mercados y el uso de reservas congeladas
-       Penalidad = sanctions_score × 4 → [0, 40] pts
+    Variables:
+      Export Score  : ln(export_critical_bn + 1) → [0,100]  peso 55%
+      Forex Score   : ln(forex_reserves_bn  + 1) → [0,100]  peso 35%
+      Sanction Pen. : sanctions_score × 4 → [0,40] pts penalidad   10%
 
-    Fórmula:
-        L = (Export_norm × 0.55 + Forex_norm × 0.35) − Sanction_penalty × 0.10
-        Rango final: [0, 100] (clip)
+    Sanciones activas reducen el apalancamiento efectivo porque:
+      - Las reservas pueden estar congeladas (Rusia 2022)
+      - Los mercados de destino están bloqueados (Irán)
     """
-    export_log  = np.log1p(df["export_critical_bn"])
-    forex_log   = np.log1p(df["forex_reserves_bn"])
-
-    def _norm(s):
-        mn, mx = s.min(), s.max()
-        return (s - mn) / (mx - mn) * 100 if mx > mn else s * 0
-
-    export_norm = _norm(export_log)
-    forex_norm  = _norm(forex_log)
-
-    # Sanciones reducen apalancamiento efectivo (reservas congeladas, mercados cerrados)
-    sanction_penalty = df["sanctions_score"] * 4   # 0-40 puntos de penalidad
-
-    leverage = (export_norm * 0.55 + forex_norm * 0.35) - sanction_penalty * 0.10
-    return leverage.clip(0, 100)
+    exp_n = _norm(np.log1p(df["export_critical_bn"]))
+    forex_n = _norm(np.log1p(df["forex_reserves_bn"]))
+    sanction_pen = df["sanctions_score"] * 4      # 0-40 pts
+    return (exp_n * 0.55 + forex_n * 0.35 - sanction_pen * 0.10).clip(0, 100)
 
 
 def calculate_resilience(df: pd.DataFrame) -> pd.Series:
     """
-    Resiliencia = f(autosuficiencia energética y alimentaria)
+    Resiliencia = capacidad de absorber shocks externos.
 
-    Componentes:
-    1. Energy Score : exportador neto = alto score. Fórmula invertida de energy_import_pct.
-       -350% (Arabia) → score alto. +85% (Japón) → score bajo.
-    2. Food Score   : food_self_sufficiency normalizado a [0, 100]
+    Variables:
+      Energy Score  : -energy_import_pct → exportador neto=alto  peso 50%
+      Food Score    : food_self_sufficiency → [0,100]             peso 50%
+      GDP Bonus     : ln(gdp_bn) → bono máx 15 pts               (suplemen.)
 
-    Ajuste por tamaño de economía: economías grandes absorben mejor los shocks.
-        GDP_adj = ln(gdp_bn) normalizado × 10 (bono máximo 10 puntos)
-
-    Fórmula:
-        R = (Energy_norm × 0.45 + Food_norm × 0.45 + GDP_adj × 0.10) × 100
+    Energía negativa (exportador neto) → mejor resiliencia estratégica.
     """
-    # Energía: más negativo (exportador neto) = mejor
-    energy_inv = -df["energy_import_pct"]  # Invertir: exportar > importar
-    energy_norm = (energy_inv - energy_inv.min()) / (energy_inv.max() - energy_inv.min()) * 100
-
-    # Alimentaria
-    food_norm = (df["food_self_sufficiency"] - df["food_self_sufficiency"].min()) / \
-                (df["food_self_sufficiency"].max() - df["food_self_sufficiency"].min()) * 100
-    food_norm = food_norm.clip(0, 100)
-
-    # Bono PIB (capacidad de absorción de shocks)
-    gdp_log  = np.log1p(df["gdp_bn"])
-    gdp_norm = (gdp_log - gdp_log.min()) / (gdp_log.max() - gdp_log.min()) * 10
-
-    resilience = (energy_norm * 0.45 + food_norm * 0.45 + gdp_norm * 0.10)
-    return resilience.clip(0, 100)
+    energy_n = _norm(-df["energy_import_pct"])
+    food_n   = _norm(df["food_self_sufficiency"]).clip(0, 100)
+    gdp_b    = _norm(np.log1p(df["gdp_bn"])) * 0.15
+    return (energy_n * 0.50 + food_n * 0.50 + gdp_b).clip(0, 100)
 
 
-def calculate_external_dependence(df: pd.DataFrame,
-                                   us_tariff_shock: float = 0.0) -> pd.Series:
+def calculate_dependence(df: pd.DataFrame) -> pd.Series:
     """
-    Dependencia_Externa = f(exposición mercado EE.UU., sanciones)
+    Dependencia externa = vulnerabilidad estructural.
 
-    Esta dimensión REDUCE el ICG: mayor dependencia → menor poder de conversión.
+    Variables:
+      US exposure   : us_export_pct normalizado  peso 65%
+      Sanction dep. : sanctions_score normalizado peso 35%
 
-    Componentes (solo para normalización — no entra directamente en la fórmula):
-    1. US_exposure  : % exportaciones → EE.UU. normalizado [0, 100]
-       México=100%, EE.UU.=0% de referencia
-    2. Sanction_dep : score sanciones normalizado [0, 100]
-       Irán/Corea del Norte = 100%, potencias occidentales ≈ 0%
-
-    El impacto arancelario Trump 2026 se aplica DIRECTAMENTE sobre el ICG
-    en compute_icg() como penalidad proporcional a la exposición:
-        Penalidad = (us_export_pct/100) × (tariff/100) × 70 pts
-    (factor de fricción 0.70: no toda la producción afectada se redirige perfectamente)
-
-    Resultado normalizado a [0, 100] para el mapa visual de dependencia.
+    Nota: el impacto arancelario NO se incluye aquí sino como penalidad
+    directa en compute_icg() para mayor transparencia del modelo.
     """
-    def _norm(s):
-        mn, mx = s.min(), s.max()
-        return (s - mn) / (mx - mn) * 100 if mx > mn else s * 0
-
-    us_dep_n  = _norm(df["us_export_pct"])
-    sanc_dep_n = _norm(df["sanctions_score"])
-
-    dep_composite = us_dep_n * 0.65 + sanc_dep_n * 0.35
-    return dep_composite.clip(0, 100)
+    return (_norm(df["us_export_pct"]) * 0.65 +
+            _norm(df["sanctions_score"]) * 0.35).clip(0, 100)
 
 
-def compute_icg(df: pd.DataFrame,
-                us_tariff_shock: float = 0.0,
-                custom_weights: Optional[Dict] = None) -> pd.DataFrame:
+def compute_icg(
+    df: pd.DataFrame,
+    us_tariff: float = 0.0,
+    w_leverage: float = 1.0,
+    w_resilience: float = 1.0,
+    news_deltas: Optional[Dict[str, float]] = None,
+) -> pd.DataFrame:
     """
-    ICG = √(Apalancamiento × Resiliencia) / (1 + Dependencia/100) − Penalidad_Arancelaria
+    Fórmula calibrada v3:
 
-    Fórmula calibrada v3 para distribución geopolíticamente coherente:
-    • √(L×R) suaviza la dominancia extrema de actores con ventajas en una sola dimensión
-    • División por (1 + D/100) en lugar de D puro evita colapso a 0 en casos extremos
-    • Penalidad arancelaria: reducción directa proporcional a exposición a EE.UU.
+        ICG = √(L^wL × R^wR) / (1 + D/100) − Penalidad_Arancelaria
 
-    Parámetros:
-    - us_tariff_shock : arancel EE.UU. en % (simulador Trump 2026)
-    - custom_weights  : {'leverage': w1, 'resilience': w2} — exponentes opcionales
-    
-    Calibración (15 países ca. 2022):
-    - EE.UU.: ICG≈100 (benchmark)
-    - Arabia/Brasil: ICG≈95  | Rusia: ICG≈84 | China: ICG≈76
-    - Canadá/Alemania/India: ICG≈66 | México: ICG≈39 (alta dep. EE.UU.)
-    - Δ México con arancel 100%: −22 pts (efecto Trump máximo)
-    - Δ Irán: ≈ 0 (ya sancionado, mínima exposición a EE.UU.)
+    • √(L×R) suaviza la dominancia extrema de actores con ventaja en una sola dimensión
+    • (1 + D/100) evita colapso matemático en dependencia máxima
+    • Penalidad arancelaria: proporcional a exposición × arancel × friction(0.70)
+
+    Ajuste por noticias:
+      news_deltas: dict {country: Δsanctions} calculado por compute_news_sanctions_delta()
+      Se suma al sanctions_score base antes de recalcular leverage y dependencia.
+
+    Calibración validada (15 países ca. 2022):
+      EE.UU.=100 | Arabia/Brasil≈95 | Rusia≈84 | China≈76
+      Canadá≈68  | Alemania≈67     | India≈66  | México≈39
+      Δ México con arancel 100%: −22 pts | Δ Irán: ≈0 (ya embargado)
     """
     df = df.copy()
 
-    def _norm(s):
-        mn, mx = s.min(), s.max()
-        return (s - mn) / (mx - mn) * 100 if mx > mn else pd.Series([50.0] * len(s), index=s.index)
+    # Aplicar ajuste de noticias sobre sanctions_score
+    if news_deltas:
+        def apply_delta(row):
+            delta = news_deltas.get(row["country"], 0.0)
+            return min(10.0, row["sanctions_score"] + delta)
+        df["sanctions_score"] = df.apply(apply_delta, axis=1)
 
-    # ── Componentes ───────────────────────────────────────────────────────────
+    # Subíndices
     df["leverage"]   = calculate_leverage(df)
     df["resilience"] = calculate_resilience(df)
-    df["dependence"] = calculate_external_dependence(df, 0.0)  # Dependencia base
+    df["dependence"] = calculate_dependence(df)
 
-    # Pesos opcionales (exponentes sobre L y R)
-    w_l = custom_weights.get("leverage",   1.0) if custom_weights else 1.0
-    w_r = custom_weights.get("resilience", 1.0) if custom_weights else 1.0
-
-    # ── ICG base: √(L^wL × R^wR) / (1 + D/100) ──────────────────────────────
-    L = np.maximum(df["leverage"],   0)
-    R = np.maximum(df["resilience"], 0)
+    L = np.maximum(df["leverage"],   0.0)
+    R = np.maximum(df["resilience"], 0.0)
     D = df["dependence"]
 
-    icg_raw = np.sqrt(np.power(L, w_l) * np.power(R, w_r)) / (1 + D / 100)
+    # ICG bruto
+    icg_raw = np.sqrt(np.power(L, w_leverage) * np.power(R, w_resilience)) / (1 + D / 100)
 
-    # ── Penalidad arancelaria Trump 2026 ──────────────────────────────────────
-    # Lógica: un arancel T% reduce el acceso al mercado estadounidense
-    # en proporción directa a la dependencia de exportaciones hacia EE.UU.
-    # friction_factor = 0.70 (solo el 70% del efecto se transmite al ICG
-    # porque los países pueden redirigir parcialmente a otros mercados)
-    friction_factor = 0.70
-    tariff_penalty = (df["us_export_pct"] / 100) * (us_tariff_shock / 100) * friction_factor * 100
+    # Penalidad arancelaria Trump 2026
+    # friction = 0.70: solo el 70% del efecto se transmite (redireccionamiento parcial)
+    tariff_penalty = (df["us_export_pct"] / 100) * (us_tariff / 100) * 0.70 * 100
+    icg_penalized  = icg_raw - tariff_penalty * 0.25
 
-    icg_penalized = icg_raw - tariff_penalty * 0.25
-
-    # ── Reescalar a [0, 100] ──────────────────────────────────────────────────
+    # Reescalar a [0, 100]
     mn, mx = icg_penalized.min(), icg_penalized.max()
     df["icg"] = ((icg_penalized - mn) / (mx - mn) * 100).clip(0, 100)
 
-    # Categorías geopolíticas
+    # Categoría semántica
     df["icg_category"] = pd.cut(
         df["icg"],
         bins=[-1, 20, 40, 60, 80, 101],
-        labels=["Crítico", "Vulnerable", "Intermedio", "Fuerte", "Dominante"]
+        labels=["Crítico", "Vulnerable", "Intermedio", "Fuerte", "Dominante"],
     )
 
-    # Delta arancelario (para visualizaciones del simulador)
-    if us_tariff_shock > 0:
-        # Calcular base sin choque usando las columnas originales
-        raw_cols = [c for c in df.columns if c in [
-            "country", "iso3", "region", "export_critical_bn", "forex_reserves_bn",
-            "energy_import_pct", "food_self_sufficiency", "gdp_bn",
-            "us_export_pct", "sanctions_score", "us_fta", "bloc"
-        ]]
-        df_base_calc = compute_icg(df[raw_cols].copy(), us_tariff_shock=0.0,
-                                   custom_weights=custom_weights)
-        # Alinear por country
-        base_map = df_base_calc.set_index("country")["icg"].to_dict()
+    # Delta arancelario (para visualizaciones)
+    if us_tariff > 0:
+        df_base_ref = compute_icg(
+            df[["country", "iso3", "region", "export_critical_bn", "forex_reserves_bn",
+                "energy_import_pct", "food_self_sufficiency", "gdp_bn",
+                "us_export_pct", "sanctions_score", "bloc"]].copy(),
+            us_tariff=0.0, w_leverage=w_leverage, w_resilience=w_resilience,
+        )
+        base_map = df_base_ref.set_index("country")["icg"].to_dict()
         df["icg_base"]  = df["country"].map(base_map)
         df["icg_delta"] = df["icg"] - df["icg_base"]
     else:
@@ -876,1019 +647,882 @@ def compute_icg(df: pd.DataFrame,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECCIÓN 4: VISUALIZACIONES PLOTLY
+# 8. VISUALIZACIONES
 # ─────────────────────────────────────────────────────────────────────────────
 
-DARK_TEMPLATE = dict(
-    layout=go.Layout(
-        paper_bgcolor="#080C14",
-        plot_bgcolor="#0A1220",
-        font=dict(family="DM Sans, sans-serif", color="#C8D6E5", size=12),
-        xaxis=dict(gridcolor="#1A3050", zerolinecolor="#1A3050", linecolor="#1A3050"),
-        yaxis=dict(gridcolor="#1A3050", zerolinecolor="#1A3050", linecolor="#1A3050"),
-        legend=dict(bgcolor="#0D1F3C", bordercolor="#1E3A5F", borderwidth=1),
-        margin=dict(t=50, b=50, l=50, r=30),
-    )
-)
-
-ICG_COLORSCALE = [
-    [0.00, "#3D0000"],   # Crítico — rojo muy oscuro
-    [0.20, "#7F1010"],   # Crítico — rojo
-    [0.30, "#C84B11"],   # Vulnerable — naranja oscuro
-    [0.45, "#E8A020"],   # Intermedio — ámbar
-    [0.60, "#A8C832"],   # Fuerte — amarillo-verde
-    [0.80, "#3CB87A"],   # Fuerte — verde
-    [1.00, "#00D4AA"],   # Dominante — cian
-]
-
-
-def render_choropleth(df: pd.DataFrame, metric: str = "icg") -> go.Figure:
-    """Mapa coroplético global del ICG o sus componentes."""
-    labels = {
-        "icg":        "ICG (0-100)",
-        "leverage":   "Apalancamiento",
-        "resilience": "Resiliencia",
-        "dependence": "Dependencia Externa",
-        "icg_delta":  "Δ ICG vs. Base",
-    }
-    titles = {
-        "icg":        "Índice de Conversión Geoeconómica — Global",
-        "leverage":   "Apalancamiento Geoeconómico — Exportaciones Críticas + Reservas",
-        "resilience": "Resiliencia Estratégica — Energía + Alimentos",
-        "dependence": "Dependencia Externa (invertida)",
-        "icg_delta":  "Impacto Arancelario Trump 2026: ΔICG por país",
-    }
-
-    colorscale = ICG_COLORSCALE
-    if metric == "icg_delta":
-        colorscale = "RdYlGn"
+def fig_choropleth(df: pd.DataFrame, metric: str = "icg") -> go.Figure:
+    labels = {"icg": "ICG (0-100)", "leverage": "Apalancamiento",
+              "resilience": "Resiliencia", "dependence": "Dependencia",
+              "icg_delta": "Δ ICG"}
+    titles = {"icg": "Índice de Conversión Geoeconómica — Global",
+              "leverage": "Apalancamiento Geoeconómico",
+              "resilience": "Resiliencia Estratégica",
+              "dependence": "Dependencia Externa",
+              "icg_delta": "Impacto Arancelario Trump 2026: Δ ICG"}
 
     fig = px.choropleth(
-        df,
-        locations="iso3",
-        color=metric,
-        hover_name="country",
-        hover_data={
-            "icg": ":.1f",
-            "leverage": ":.1f",
-            "resilience": ":.1f",
-            "dependence": ":.1f",
-            "icg_delta": ":.2f",
-            "sanctions_score": ":.1f",
-            "iso3": False,
-        },
-        color_continuous_scale=colorscale,
+        df, locations="iso3", color=metric, hover_name="country",
+        hover_data={"icg": ":.1f", "leverage": ":.1f", "resilience": ":.1f",
+                    "dependence": ":.1f", "sanctions_score": ":.1f", "iso3": False},
+        color_continuous_scale="RdYlGn" if metric == "icg_delta" else ICG_COLORSCALE,
         range_color=(df[metric].min(), df[metric].max()),
-        title=titles.get(metric, metric),
-        labels={metric: labels.get(metric, metric)},
+        title=titles.get(metric, metric), labels={metric: labels.get(metric, metric)},
     )
-    fig.update_traces(
-        marker_line_color="#1E3A5F",
-        marker_line_width=0.8,
-    )
+    fig.update_traces(marker_line_color="#1E3A5F", marker_line_width=0.7)
     fig.update_layout(
-        **DARK_TEMPLATE["layout"].to_plotly_json(),
-        title=dict(x=0.05, font=dict(size=14, color="#E8F4FD",
-                                     family="Space Mono, monospace")),
-        geo=dict(
-            bgcolor="#080C14",
-            showframe=False,
-            showcoastlines=True,
-            coastlinecolor="#1E3A5F",
-            showland=True,
-            landcolor="#0A1220",
-            showocean=True,
-            oceancolor="#060A10",
-            showlakes=False,
-            projection_type="natural earth",
-        ),
+        **DARK_LAYOUT,
+        title=dict(x=0.04, font=dict(size=13, color="#E8F4FD", family="Space Mono, monospace")),
+        geo=dict(bgcolor="#080C14", showframe=False, showcoastlines=True,
+                 coastlinecolor="#1E3A5F", showland=True, landcolor="#0A1220",
+                 showocean=True, oceancolor="#060A10", projection_type="natural earth"),
         coloraxis_colorbar=dict(
             title=labels.get(metric, metric),
-            tickfont=dict(family="Space Mono, monospace", size=9, color="#6B8BA4"),
-            titlefont=dict(family="Space Mono, monospace", size=10, color="#4A9ECA"),
-            len=0.6,
-            thickness=12,
-            bgcolor="#0D1F3C",
-            bordercolor="#1E3A5F",
+            tickfont=dict(family="Space Mono, monospace", size=8, color="#6B8BA4"),
+            titlefont=dict(family="Space Mono, monospace", size=9, color="#4A9ECA"),
+            len=0.55, thickness=11, bgcolor="#0D1F3C", bordercolor="#1E3A5F",
         ),
-        height=480,
-        margin=dict(t=60, b=10, l=0, r=0),
+        height=460, margin=dict(t=55, b=5, l=0, r=0),
     )
     return fig
 
 
-def render_icg_ranking_bar(df: pd.DataFrame, n: int = 20) -> go.Figure:
-    """Bar chart horizontal con el ranking ICG de los top/bottom N países."""
-    df_plot = df.head(n).copy()
-    colors = df_plot["icg"].map(
-        lambda x: ("#00D4AA" if x > 70 else
-                   "#3CB87A" if x > 55 else
-                   "#E8A020" if x > 40 else
-                   "#C84B11" if x > 25 else
-                   "#7F1010")
-    )
+def fig_ranking_bar(df: pd.DataFrame, n: int = 22) -> go.Figure:
+    df_p = df.head(n).copy()
+    colors = df_p["icg"].map(lambda x:
+        "#00D4AA" if x > 75 else "#3CB87A" if x > 55 else
+        "#E8A020" if x > 38 else "#C84B11" if x > 20 else "#7F1010")
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=df_plot["icg"],
-        y=df_plot["country"],
-        orientation="h",
-        marker=dict(
-            color=colors,
-            line=dict(width=0),
-            pattern=dict(shape=""),
-        ),
-        text=df_plot["icg"].round(1),
-        textposition="outside",
-        textfont=dict(family="Space Mono, monospace", size=9, color="#C8D6E5"),
-        customdata=np.stack([
-            df_plot["leverage"], df_plot["resilience"],
-            df_plot["dependence"], df_plot["icg_category"].astype(str)
-        ], axis=1),
-        hovertemplate=(
-            "<b>%{y}</b><br>"
-            "ICG: %{x:.1f}<br>"
-            "Apalancamiento: %{customdata[0]:.1f}<br>"
-            "Resiliencia: %{customdata[1]:.1f}<br>"
-            "Dependencia: %{customdata[2]:.1f}<br>"
-            "Categoría: %{customdata[3]}<extra></extra>"
-        ),
+    fig = go.Figure(go.Bar(
+        x=df_p["icg"], y=df_p["country"], orientation="h",
+        marker=dict(color=colors, line=dict(width=0)),
+        text=df_p["icg"].round(1), textposition="outside",
+        textfont=dict(family="Space Mono, monospace", size=8.5, color="#C8D6E5"),
+        customdata=np.stack([df_p["leverage"], df_p["resilience"],
+                             df_p["dependence"], df_p["icg_category"].astype(str)], axis=1),
+        hovertemplate="<b>%{y}</b><br>ICG: %{x:.1f}<br>"
+                      "Apalancamiento: %{customdata[0]:.1f}<br>"
+                      "Resiliencia: %{customdata[1]:.1f}<br>"
+                      "Dependencia: %{customdata[2]:.1f}<br>"
+                      "Categoría: %{customdata[3]}<extra></extra>",
     ))
-
-    fig.add_vline(x=50, line_dash="dash", line_color="#1E3A5F", line_width=1)
-    fig.add_annotation(x=50, y=1, text="Umbral 50", showarrow=False,
-                       font=dict(color="#4A9ECA", size=9, family="Space Mono"),
-                       yref="paper", xanchor="left", xshift=5)
-
-    fig.update_layout(
-        **DARK_TEMPLATE["layout"].to_plotly_json(),
-        title=dict(text=f"Ranking ICG — Top {n} Países",
-                   font=dict(family="Space Mono, monospace", size=13, color="#E8F4FD")),
-        xaxis=dict(title="ICG (0-100)", range=[0, 115]),
-        yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
-        height=max(500, n * 26),
-        showlegend=False,
+    fig.add_vline(x=50, line_dash="dash", line_color="#2A4A6A", line_width=1)
+    fig.add_annotation(x=50, y=1, text="50", showarrow=False,
+                       font=dict(color="#4A9ECA", size=8, family="Space Mono"),
+                       yref="paper", xanchor="left", xshift=4)
+    fig.update_layout(**DARK_LAYOUT,
+        title=dict(text=f"Ranking ICG — {n} Países",
+                   font=dict(family="Space Mono, monospace", size=12, color="#E8F4FD")),
+        xaxis=dict(title="ICG (0-100)", range=[0, 118]),
+        yaxis=dict(autorange="reversed", tickfont=dict(size=9)),
+        height=max(480, n * 24), showlegend=False,
     )
     return fig
 
 
-def render_radar_comparison(df: pd.DataFrame,
-                             countries: list) -> go.Figure:
-    """Radar chart para comparar dimensiones ICG entre países seleccionados."""
-    dimensions = ["leverage", "resilience", "icg"]
-    dim_labels  = ["Apalancamiento", "Resiliencia", "ICG Global"]
+def fig_radar_dual(df: pd.DataFrame, country_a: str, country_b: str) -> go.Figure:
+    """
+    Radar de comparación dual: muestra 4 dimensiones para dos países.
+    Dimensiones: Apalancamiento, Resiliencia, Autonomía Estratégica (1-dep), ICG.
+    """
+    dims = ["leverage", "resilience", "dependence_inv", "icg"]
+    labels = ["Apalancamiento", "Resiliencia", "Aut. Estratégica", "ICG Global"]
 
-    COLORS_RADAR = ["#00D4AA", "#F0B429", "#FF6B6B", "#4A9ECA", "#A78BFA", "#F97316"]
+    df_r = df.copy()
+    df_r["dependence_inv"] = 100 - df_r["dependence"]   # invertir: menor dep = mejor
+
+    rows = {c: df_r[df_r["country"] == c] for c in [country_a, country_b]}
 
     fig = go.Figure()
+    colors = [RADAR_COLORS[0], RADAR_COLORS[1]]
 
-    for i, country in enumerate(countries):
-        row = df[df["country"] == country]
+    for i, (country, color) in enumerate(zip([country_a, country_b], colors)):
+        row = rows[country]
         if row.empty:
             continue
-        row = row.iloc[0]
-        values = [row[d] for d in dimensions]
-        values += [values[0]]  # cerrar polígono
+        r = row.iloc[0]
+        vals = [r[d] for d in dims] + [r[dims[0]]]     # cerrar polígono
+        lbls = labels + [labels[0]]
 
         fig.add_trace(go.Scatterpolar(
-            r=values,
-            theta=dim_labels + [dim_labels[0]],
-            name=country,
-            line=dict(color=COLORS_RADAR[i % len(COLORS_RADAR)], width=2),
+            r=vals, theta=lbls, name=country,
+            line=dict(color=color, width=2.5),
             fill="toself",
-            fillcolor=f"rgba{tuple(list(px.colors.hex_to_rgb(COLORS_RADAR[i % len(COLORS_RADAR)])) + [0.08])}",
+            fillcolor=color.replace("#", "rgba(") + ", 0.10)",
+        ))
+
+        # Puntos individuales para hover
+        fig.add_trace(go.Scatterpolar(
+            r=[r[d] for d in dims], theta=labels, name=f"{country} pts",
+            mode="markers",
+            marker=dict(color=color, size=8),
+            showlegend=False,
+            hovertemplate="<b>%{theta}</b>: %{r:.1f}<extra>" + country + "</extra>",
         ))
 
     fig.update_layout(
-        **DARK_TEMPLATE["layout"].to_plotly_json(),
+        **DARK_LAYOUT,
         polar=dict(
             bgcolor="#0A1220",
-            radialaxis=dict(
-                visible=True, range=[0, 100],
-                gridcolor="#1A3050", linecolor="#1A3050",
-                tickfont=dict(size=8, color="#6B8BA4", family="Space Mono"),
-            ),
-            angularaxis=dict(
-                gridcolor="#1A3050", linecolor="#1A3050",
-                tickfont=dict(size=10, color="#C8D6E5"),
-            ),
+            radialaxis=dict(visible=True, range=[0, 100], gridcolor="#1A3050",
+                            linecolor="#1A3050",
+                            tickfont=dict(size=7, color="#6B8BA4", family="Space Mono")),
+            angularaxis=dict(gridcolor="#1A3050", linecolor="#1A3050",
+                             tickfont=dict(size=10, color="#C8D6E5")),
         ),
-        title=dict(text="Comparación Multidimensional ICG",
-                   font=dict(family="Space Mono, monospace", size=13, color="#E8F4FD")),
+        title=dict(text=f"Comparación Dimensional: {country_a} vs. {country_b}",
+                   font=dict(family="Space Mono, monospace", size=12, color="#E8F4FD")),
         showlegend=True,
-        height=420,
+        legend=dict(bgcolor="#0D1F3C", bordercolor="#1E3A5F", borderwidth=1,
+                    font=dict(size=10)),
+        height=440,
     )
     return fig
 
 
-def render_tariff_impact_chart(df_base: pd.DataFrame,
-                                df_shock: pd.DataFrame,
-                                highlight: list) -> go.Figure:
-    """
-    Gráfico de impacto arancelario: ICG base vs. ICG con choque Trump 2026.
-    Muestra la caída relativa de ICG por país al aplicar el arancel seleccionado.
-    """
-    # Filtrar países con mayor exposición a EE.UU. (más interesantes para el análisis)
-    df_merged = df_base[["country", "icg", "us_export_pct", "sanctions_score"]].copy()
-    df_merged["icg_base"]  = df_base["icg"].values
-    df_merged["icg_shock"] = df_shock["icg"].values
-    df_merged["delta"]     = df_merged["icg_shock"] - df_merged["icg_base"]
+def build_comparison_table(df: pd.DataFrame, country_a: str, country_b: str) -> str:
+    """Genera HTML de tabla comparativa dimensión a dimensión con badges de ganador."""
+    df_r = df.copy()
+    df_r["dependence_inv"] = 100 - df_r["dependence"]
 
-    # Top 15 más afectados + países destacados
-    top_affected = (df_merged.nsmallest(15, "delta")["country"].tolist()
-                    + highlight)
-    df_plot = df_merged[df_merged["country"].isin(set(top_affected))].copy()
-    df_plot = df_plot.sort_values("delta")
+    dims = [
+        ("icg",            "ICG Global"),
+        ("leverage",       "Apalancamiento"),
+        ("resilience",     "Resiliencia"),
+        ("dependence_inv", "Aut. Estratégica"),
+        ("sanctions_score","Sanciones (0=mejor)"),
+        ("us_export_pct",  "Expo. → EE.UU. (0=mejor)"),
+        ("gdp_bn",         "PIB (bn USD)"),
+    ]
 
+    ra = df_r[df_r["country"] == country_a].iloc[0] if not df_r[df_r["country"] == country_a].empty else None
+    rb = df_r[df_r["country"] == country_b].iloc[0] if not df_r[df_r["country"] == country_b].empty else None
+
+    if ra is None or rb is None:
+        return "<p>País no encontrado.</p>"
+
+    rows_html = ""
+    for col, label in dims:
+        va, vb = float(ra[col]), float(rb[col])
+        # Para sanciones y expo EEUU, menor es mejor
+        lower_better = col in ("sanctions_score", "us_export_pct", "dependence")
+        a_wins = (va > vb) if not lower_better else (va < vb)
+        b_wins = (vb > va) if not lower_better else (vb < va)
+
+        badge_a = '<span class="win-badge">✓ Gana</span>' if a_wins else ""
+        badge_b = '<span class="win-badge">✓ Gana</span>' if b_wins else ""
+
+        fmt = "{:,.0f}" if col == "gdp_bn" else "{:.1f}"
+        rows_html += f"""
+        <tr>
+            <td style="color:#6B8BA4; font-size:0.82rem; padding:7px 10px;">{label}</td>
+            <td style="font-family:'Space Mono',monospace; font-size:0.88rem;
+                       color:{'#00D4AA' if a_wins else '#C8D6E5'}; text-align:center;">
+                {fmt.format(va)} {badge_a}
+            </td>
+            <td style="font-family:'Space Mono',monospace; font-size:0.88rem;
+                       color:{'#F0B429' if b_wins else '#C8D6E5'}; text-align:center;">
+                {fmt.format(vb)} {badge_b}
+            </td>
+        </tr>"""
+
+    return f"""
+    <table style="width:100%; border-collapse:collapse;
+                  background:#0A1628; border-radius:8px; overflow:hidden;">
+        <thead>
+            <tr style="background:#0D1F3C; border-bottom:1px solid #1E3A5F;">
+                <th style="padding:10px; text-align:left; font-family:'Space Mono',monospace;
+                           font-size:0.75rem; color:#4A9ECA; letter-spacing:0.1em;">DIMENSIÓN</th>
+                <th style="padding:10px; text-align:center; font-family:'Space Mono',monospace;
+                           font-size:0.75rem; color:#00D4AA;">{country_a.upper()}</th>
+                <th style="padding:10px; text-align:center; font-family:'Space Mono',monospace;
+                           font-size:0.75rem; color:#F0B429;">{country_b.upper()}</th>
+            </tr>
+        </thead>
+        <tbody style="border: 1px solid #1E3A5F;">
+            {rows_html}
+        </tbody>
+    </table>"""
+
+
+def fig_scatter_matrix(df: pd.DataFrame) -> go.Figure:
+    """Matriz geopolítica: Apalancamiento vs Resiliencia, burbujas = PIB, color = ICG."""
     fig = go.Figure()
-
-    # Barras delta
-    colors_delta = df_plot["delta"].map(
-        lambda x: "#FF6B6B" if x < -5 else "#F0B429" if x < 0 else "#4ADE80"
-    )
-    fig.add_trace(go.Bar(
-        x=df_plot["delta"],
-        y=df_plot["country"],
-        orientation="h",
-        marker=dict(color=colors_delta, line=dict(width=0)),
-        name="ΔICG",
-        text=df_plot["delta"].round(2),
-        textposition="outside",
-        textfont=dict(family="Space Mono, monospace", size=9),
-        hovertemplate=(
-            "<b>%{y}</b><br>"
-            "ΔICG: %{x:.2f}<br>"
-            "Expo. a EE.UU.: %{customdata:.1f}%<extra></extra>"
-        ),
-        customdata=df_plot["us_export_pct"],
-    ))
-
-    fig.add_vline(x=0, line_color="#4A9ECA", line_width=1.5)
-
-    # Resaltar países seleccionados
-    for c in highlight:
-        row = df_plot[df_plot["country"] == c]
-        if not row.empty:
-            fig.add_annotation(
-                x=row["delta"].values[0],
-                y=c,
-                text=f"← {c}",
-                showarrow=False,
-                font=dict(color="#F0B429", size=10, family="Space Mono"),
-                xanchor="right" if row["delta"].values[0] < 0 else "left",
-            )
-
-    fig.update_layout(
-        **DARK_TEMPLATE["layout"].to_plotly_json(),
-        title=dict(
-            text="Simulador Trump 2026: Impacto Arancelario sobre el ICG",
-            font=dict(family="Space Mono, monospace", size=13, color="#E8F4FD"),
-        ),
-        xaxis=dict(title="Δ ICG (puntos)", zeroline=True),
-        yaxis=dict(autorange="reversed"),
-        height=500,
-        showlegend=False,
-    )
-    return fig
-
-
-def render_scatter_leverage_resilience(df: pd.DataFrame) -> go.Figure:
-    """
-    Scatter plot Apalancamiento vs Resiliencia.
-    Tamaño de burbuja = PIB. Color = ICG.
-    Cuadrantes geopolíticos: Potencia, Autarquía, Dependiente, Vulnerable.
-    """
-    fig = go.Figure()
-
-    # Fondo de cuadrantes
     mid = 50
-    for (x0, x1, y0, y1, label, color) in [
-        (mid, 105, mid, 105, "POTENCIAS<br>GLOBALES",   "rgba(0, 212, 170, 0.04)"),
-        (0,   mid, mid, 105, "AUTARQUÍAS<br>RESILIENTES", "rgba(240, 180, 41, 0.04)"),
-        (mid, 105, 0,   mid, "POTENCIAS<br>VULNERABLES",  "rgba(74, 158, 202, 0.04)"),
-        (0,   mid, 0,   mid, "ESTADOS<br>FRÁGILES",       "rgba(255, 107, 107, 0.04)"),
+    for x0, x1, y0, y1, lbl, col in [
+        (mid,105, mid,105, "POTENCIAS GLOBALES",      "rgba(0,212,170,0.04)"),
+        (0,  mid, mid,105, "AUTARQUÍAS RESILIENTES",  "rgba(240,180,41,0.04)"),
+        (mid,105, 0,  mid, "POTENCIAS VULNERABLES",   "rgba(74,158,202,0.04)"),
+        (0,  mid, 0,  mid, "ESTADOS FRÁGILES",        "rgba(255,107,107,0.04)"),
     ]:
         fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0, y1=y1,
-                      fillcolor=color, line_width=0)
-        fig.add_annotation(
-            x=(x0+x1)/2, y=(y0+y1)/2, text=label,
-            showarrow=False, font=dict(size=8, color="#3A5A7A", family="Space Mono"),
-            opacity=0.7, align="center",
-        )
+                      fillcolor=col, line_width=0)
+        fig.add_annotation(x=(x0+x1)/2, y=(y0+y1)/2, text=lbl, showarrow=False,
+                           font=dict(size=7.5, color="#3A5A7A", family="Space Mono"),
+                           opacity=0.8, align="center")
 
-    # Puntos
     fig.add_trace(go.Scatter(
-        x=df["leverage"],
-        y=df["resilience"],
-        mode="markers+text",
-        marker=dict(
-            size=np.sqrt(df["gdp_bn"] / 25) + 8,
-            color=df["icg"],
-            colorscale=ICG_COLORSCALE,
-            showscale=True,
-            line=dict(color="#1E3A5F", width=1),
-            colorbar=dict(
-                title="ICG",
-                tickfont=dict(family="Space Mono", size=8),
-                len=0.6, thickness=10,
-                bgcolor="#0D1F3C", bordercolor="#1E3A5F",
-            ),
-        ),
-        text=df["country"],
-        textposition="top center",
-        textfont=dict(size=8, color="#C8D6E5", family="DM Sans"),
-        hovertemplate=(
-            "<b>%{text}</b><br>"
-            "Apalancamiento: %{x:.1f}<br>"
-            "Resiliencia: %{y:.1f}<br>"
-            "ICG: %{marker.color:.1f}<extra></extra>"
-        ),
+        x=df["leverage"], y=df["resilience"], mode="markers+text",
+        marker=dict(size=np.sqrt(df["gdp_bn"] / 22) + 7, color=df["icg"],
+                    colorscale=ICG_COLORSCALE, showscale=True,
+                    line=dict(color="#1E3A5F", width=1),
+                    colorbar=dict(title="ICG", len=0.55, thickness=9,
+                                  bgcolor="#0D1F3C", bordercolor="#1E3A5F",
+                                  tickfont=dict(family="Space Mono", size=7))),
+        text=df["country"], textposition="top center",
+        textfont=dict(size=7.5, color="#C8D6E5", family="DM Sans"),
+        hovertemplate="<b>%{text}</b><br>Apalancamiento: %{x:.1f}<br>"
+                      "Resiliencia: %{y:.1f}<br>ICG: %{marker.color:.1f}<extra></extra>",
     ))
-
-    # Líneas de cuadrante
     fig.add_hline(y=50, line_dash="dot", line_color="#1E3A5F", line_width=1)
     fig.add_vline(x=50, line_dash="dot", line_color="#1E3A5F", line_width=1)
-
-    fig.update_layout(
-        **DARK_TEMPLATE["layout"].to_plotly_json(),
+    fig.update_layout(**DARK_LAYOUT,
         title=dict(text="Matriz Geopolítica: Apalancamiento vs. Resiliencia",
-                   font=dict(family="Space Mono, monospace", size=13, color="#E8F4FD")),
-        xaxis=dict(title="Apalancamiento (Exportaciones Críticas + Reservas)", range=[0, 105]),
-        yaxis=dict(title="Resiliencia (Energía + Alimentos)", range=[0, 105]),
-        height=550,
+                   font=dict(family="Space Mono, monospace", size=12, color="#E8F4FD")),
+        xaxis=dict(title="Apalancamiento", range=[0, 105]),
+        yaxis=dict(title="Resiliencia", range=[0, 105]),
+        height=500,
     )
     return fig
 
 
-def render_sanctions_network(df: pd.DataFrame) -> go.Figure:
-    """
-    Mapa de calor: Sanciones EE.UU. vs. ICG
-    Muestra la "zona de sombra arancelaria" (países bajo presión estadounidense)
-    """
-    fig = px.scatter(
-        df.sort_values("sanctions_score"),
-        x="sanctions_score",
-        y="icg",
-        size="gdp_bn",
-        color="us_export_pct",
-        text="country",
-        color_continuous_scale="Blues_r",
-        size_max=60,
-        labels={
-            "sanctions_score": "Exposición a Sanciones EE.UU. (0-10)",
-            "icg": "ICG (0-100)",
-            "us_export_pct": "% Exp. → EE.UU.",
-        },
-        title="Zona de Sombra Arancelaria: Sanciones vs. Poder de Conversión",
-    )
+def fig_tariff_impact(df_base: pd.DataFrame, df_shock: pd.DataFrame,
+                       highlights: List[str]) -> go.Figure:
+    """Barras horizontales mostrando Δ ICG por país con el arancel activo."""
+    merged = df_base[["country", "icg", "us_export_pct"]].copy()
+    merged["icg_shock"] = df_shock.set_index("country")["icg"].reindex(merged["country"]).values
+    merged["delta"] = merged["icg_shock"] - merged["icg"]
+    merged = merged.sort_values("delta").head(20)
 
-    # Umbral de riesgo alto
-    fig.add_vline(x=7, line_dash="dash", line_color="#FF6B6B",
-                  annotation_text="Zona de Sanciones Severas",
-                  annotation_font_color="#FF6B6B",
-                  annotation_font_size=9)
-    fig.add_hline(y=40, line_dash="dash", line_color="#F0B429",
-                  annotation_text="Umbral ICG crítico",
-                  annotation_font_color="#F0B429",
-                  annotation_font_size=9)
+    colors = merged["delta"].map(
+        lambda x: "#FF6B6B" if x < -8 else "#F0B429" if x < -2 else "#4ADE80")
 
-    fig.update_traces(
-        marker_line_color="#1E3A5F", marker_line_width=1,
-        textfont=dict(size=8, color="#C8D6E5"),
-    )
-    fig.update_layout(
-        **DARK_TEMPLATE["layout"].to_plotly_json(),
-        height=480,
-        title_font=dict(family="Space Mono, monospace", size=13, color="#E8F4FD"),
-        coloraxis_colorbar=dict(
-            title="% Exp EE.UU.",
-            tickfont=dict(family="Space Mono", size=8),
-            bgcolor="#0D1F3C", bordercolor="#1E3A5F",
-        ),
-    )
-    return fig
-
-
-def render_tariff_time_simulation(
-        df: pd.DataFrame,
-        country: str,
-        tariff_range: np.ndarray) -> go.Figure:
-    """
-    Simulación de trayectoria del ICG de un país específico
-    a medida que aumenta el arancel de EE.UU. (0-100%).
-    Muestra 3 escenarios: Optimista, Base, Pesimista.
-    """
-    icg_values = []
-    for t in tariff_range:
-        df_sim = compute_icg(df.copy(), us_tariff_shock=t)
-        row = df_sim[df_sim["country"] == country]
+    fig = go.Figure(go.Bar(
+        x=merged["delta"], y=merged["country"], orientation="h",
+        marker=dict(color=colors, line=dict(width=0)),
+        text=merged["delta"].round(2), textposition="outside",
+        textfont=dict(family="Space Mono, monospace", size=8.5),
+        hovertemplate="<b>%{y}</b><br>Δ ICG: %{x:.2f}<br>"
+                      "Expo → EE.UU.: %{customdata:.1f}%<extra></extra>",
+        customdata=merged["us_export_pct"],
+    ))
+    fig.add_vline(x=0, line_color="#4A9ECA", line_width=1.5)
+    for c in highlights:
+        row = merged[merged["country"] == c]
         if not row.empty:
-            icg_values.append(row["icg"].values[0])
-        else:
-            icg_values.append(np.nan)
+            fig.add_annotation(x=row["delta"].values[0], y=c, text=f"◄ {c}",
+                               showarrow=False, font=dict(color="#F0B429", size=9),
+                               xanchor="right" if row["delta"].values[0] < 0 else "left")
+    fig.update_layout(**DARK_LAYOUT,
+        title=dict(text="Simulador Trump 2026: Impacto Arancelario por País",
+                   font=dict(family="Space Mono, monospace", size=12, color="#E8F4FD")),
+        xaxis=dict(title="Δ ICG (puntos)"),
+        yaxis=dict(autorange="reversed"),
+        height=480, showlegend=False,
+    )
+    return fig
 
-    icg_base = np.array(icg_values)
 
-    # Escenarios: ±10% variación en los parámetros
-    icg_optimistic = np.clip(icg_base * 1.10, 0, 100)
-    icg_pessimistic = np.clip(icg_base * 0.90, 0, 100)
+def fig_tariff_trajectory(df_raw: pd.DataFrame, country: str,
+                           step: int = 5) -> go.Figure:
+    """Trayectoria ICG de un país a lo largo de 0-100% de arancel."""
+    tariff_range = np.arange(0, 101, step)
+    vals = []
+    for t in tariff_range:
+        sim = compute_icg(df_raw.copy(), us_tariff=float(t))
+        row = sim[sim["country"] == country]
+        vals.append(row["icg"].values[0] if not row.empty else np.nan)
+
+    base = np.array(vals)
+    opt  = np.clip(base * 1.10, 0, 100)
+    pes  = np.clip(base * 0.90, 0, 100)
 
     fig = go.Figure()
-
-    # Banda de incertidumbre
     fig.add_trace(go.Scatter(
         x=np.concatenate([tariff_range, tariff_range[::-1]]),
-        y=np.concatenate([icg_optimistic, icg_pessimistic[::-1]]),
-        fill="toself",
-        fillcolor="rgba(74, 158, 202, 0.10)",
-        line=dict(color="rgba(74, 158, 202, 0)"),
-        name="Banda de incertidumbre",
-        showlegend=True,
-    ))
+        y=np.concatenate([opt, pes[::-1]]),
+        fill="toself", fillcolor="rgba(74,158,202,0.09)",
+        line=dict(color="rgba(74,158,202,0)"), name="Banda incertidumbre"))
+    fig.add_trace(go.Scatter(x=tariff_range, y=opt, line=dict(color="#4A9ECA", width=1, dash="dot"), name="Optimista"))
+    fig.add_trace(go.Scatter(x=tariff_range, y=base, line=dict(color="#F0B429", width=2.5), name=f"Base — {country}"))
+    fig.add_trace(go.Scatter(x=tariff_range, y=pes, line=dict(color="#FF6B6B", width=1, dash="dot"), name="Pesimista"))
 
-    # Escenario optimista
-    fig.add_trace(go.Scatter(
-        x=tariff_range, y=icg_optimistic,
-        line=dict(color="#4A9ECA", width=1, dash="dot"),
-        name="Escenario optimista",
-    ))
-
-    # Escenario base
-    fig.add_trace(go.Scatter(
-        x=tariff_range, y=icg_base,
-        line=dict(color="#F0B429", width=2.5),
-        name=f"ICG Base — {country}",
-        mode="lines",
-    ))
-
-    # Escenario pesimista
-    fig.add_trace(go.Scatter(
-        x=tariff_range, y=icg_pessimistic,
-        line=dict(color="#FF6B6B", width=1, dash="dot"),
-        name="Escenario pesimista",
-    ))
-
-    # Líneas de referencia
-    fig.add_hline(y=30, line_dash="dash", line_color="#FF6B6B", line_width=0.8,
-                  annotation_text="Umbral crítico (30)", annotation_font_size=9,
-                  annotation_font_color="#FF6B6B")
-    fig.add_hline(y=60, line_dash="dash", line_color="#4ADE80", line_width=0.8,
-                  annotation_text="Umbral fuerte (60)", annotation_font_size=9,
-                  annotation_font_color="#4ADE80")
-
-    # Eventos históricos marcados
-    events = {
-        25: "Aranceles\nFase 1 (2018)",
-        60: "Máx. guerra\ncomercial",
-        100: "Embargo\ntotal",
-    }
-    for x_val, label in events.items():
+    for y_val, col, lbl in [(30, "#FF6B6B", "Crítico"), (60, "#4ADE80", "Fuerte")]:
+        fig.add_hline(y=y_val, line_dash="dash", line_color=col, line_width=0.8,
+                      annotation_text=lbl, annotation_font_color=col, annotation_font_size=8)
+    for x_val, lbl in [(25, "Fase I\n2018"), (60, "Guerra\ncomercial"), (100, "Embargo")]:
         fig.add_vline(x=x_val, line_dash="dot", line_color="#1E3A5F", line_width=1)
-        fig.add_annotation(x=x_val, y=95, text=label, showarrow=False,
-                           font=dict(size=7.5, color="#4A9ECA", family="Space Mono"),
-                           textangle=0, yref="y")
+        fig.add_annotation(x=x_val, y=97, text=lbl, showarrow=False,
+                           font=dict(size=7.5, color="#4A9ECA", family="Space Mono"))
 
-    fig.update_layout(
-        **DARK_TEMPLATE["layout"].to_plotly_json(),
-        title=dict(
-            text=f"Trayectoria ICG de {country} vs. Escalada Arancelaria EE.UU.",
-            font=dict(family="Space Mono, monospace", size=13, color="#E8F4FD"),
-        ),
-        xaxis=dict(title="Arancel EE.UU. aplicado (%)", range=[0, 101]),
+    fig.update_layout(**DARK_LAYOUT,
+        title=dict(text=f"Trayectoria ICG: {country} vs. Escalada Arancelaria",
+                   font=dict(family="Space Mono, monospace", size=12, color="#E8F4FD")),
+        xaxis=dict(title="Arancel EE.UU. (%)", range=[0, 101]),
         yaxis=dict(title="ICG (0-100)", range=[0, 105]),
-        height=420,
-        legend=dict(orientation="h", y=-0.2),
+        height=400, legend=dict(orientation="h", y=-0.22),
+    )
+    return fig
+
+
+def fig_news_sanction_bars(news_deltas: Dict[str, float]) -> go.Figure:
+    """Muestra el ajuste de sanctions_score inducido por noticias recientes."""
+    if not news_deltas:
+        return go.Figure()
+    df_n = pd.DataFrame(list(news_deltas.items()), columns=["country", "delta"])
+    df_n = df_n[df_n["delta"] > 0].sort_values("delta", ascending=False)
+    if df_n.empty:
+        return go.Figure()
+
+    colors = df_n["delta"].map(lambda x: "#FF6B6B" if x > 1.5 else "#F0B429")
+    fig = go.Figure(go.Bar(
+        x=df_n["delta"], y=df_n["country"], orientation="h",
+        marker=dict(color=colors, line=dict(width=0)),
+        text=df_n["delta"].round(2), textposition="outside",
+        textfont=dict(family="Space Mono, monospace", size=9),
+        hovertemplate="<b>%{y}</b><br>Δ Sanciones: +%{x:.2f}<extra></extra>",
+    ))
+    fig.update_layout(**DARK_LAYOUT,
+        title=dict(text="Ajuste Automático de Sanciones por Noticias",
+                   font=dict(family="Space Mono, monospace", size=12, color="#E8F4FD")),
+        xaxis=dict(title="Δ Sanctions Score"),
+        yaxis=dict(autorange="reversed"),
+        height=max(200, len(df_n) * 35 + 80), showlegend=False,
     )
     return fig
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECCIÓN 5: LAYOUT PRINCIPAL STREAMLIT
+# 9. LAYOUT PRINCIPAL
 # ─────────────────────────────────────────────────────────────────────────────
-
 def main():
-    # ── HEADER ──────────────────────────────────────────────────────────────
-    st.markdown("""
-    <div class="icg-header">
-        <div style="position: relative; z-index: 1;">
-            <p class="icg-subtitle">⬡ SISTEMA DE ANÁLISIS GEOPOLÍTICO · v1.0 · 2026</p>
-            <h1 class="icg-title">Índice de Conversión Geoeconómica</h1>
-            <p style="color: #6B8BA4; font-size: 0.95rem; margin-top: 8px; max-width: 720px;">
-                Mide la capacidad de un Estado para convertir sus recursos económicos 
-                en poder político internacional. Integra datos en tiempo real del 
-                Banco Mundial, UN Comtrade e IMF.
-            </p>
-            <div class="icg-formula">
-                ICG = ( Apalancamiento × Resiliencia ) ÷ Dependencia_Externa
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
 
     # ── SIDEBAR ──────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown("### 🎛️ Controles")
-
-        st.markdown("**Año de referencia**")
-        year = st.selectbox("Año", [2022, 2021, 2020], index=0, label_visibility="collapsed")
+        st.markdown("### 🎛️ Controles ICG")
 
         st.markdown("---")
-        st.markdown("### 🇺🇸 Simulador Trump 2026")
+        st.markdown("#### 🇺🇸 Simulador Trump 2026")
         st.markdown(
             '<div class="alert-box">Ajusta el arancel de EE.UU. y observa '
-            'el impacto en tiempo real sobre el ICG de cada país.</div>',
-            unsafe_allow_html=True
+            'el impacto en tiempo real sobre el ICG global.</div>',
+            unsafe_allow_html=True,
         )
-        tariff = st.slider(
-            "Arancel EE.UU. aplicado (%)",
-            min_value=0, max_value=100, value=0, step=5,
-            help="0% = sin choque / 25% = Guerra comercial Fase I / 100% = Embargo total"
-        )
+        tariff = st.slider("Arancel EE.UU. (%)", 0, 100, 0, 5,
+                           help="0%=sin choque | 25%=Guerra comercial Fase I | 100%=Embargo")
 
         st.markdown("---")
-        st.markdown("### ⚖️ Pesos del Índice")
-        w_leverage = st.slider("Peso Apalancamiento", 0.5, 2.0, 1.0, 0.1)
-        w_resilience = st.slider("Peso Resiliencia", 0.5, 2.0, 1.0, 0.1)
+        st.markdown("#### ⚖️ Pesos del Índice")
+        w_lev = st.slider("Peso Apalancamiento", 0.5, 2.0, 1.0, 0.1)
+        w_res = st.slider("Peso Resiliencia",    0.5, 2.0, 1.0, 0.1)
 
         st.markdown("---")
-        st.markdown("### 🔬 Países del Análisis")
+        st.markdown("#### 📰 Noticias en Vivo")
+        news_api_key = st.text_input(
+            "NewsAPI Key", type="password",
+            placeholder="Obtener gratis en newsapi.org",
+            help="Gratis hasta 100 peticiones/día. newsapi.org/register",
+        )
+        news_query = st.text_input(
+            "Búsqueda de noticias",
+            value="sanctions tariffs trade war embargo",
+            help="Palabras clave para detectar eventos que afectan las sanciones",
+        )
+        fetch_news = st.button("🔄 Actualizar noticias", use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### 🔬 Países para Análisis")
         all_countries = sorted([
-            "United States", "China", "Russia", "Iran", "Saudi Arabia",
-            "India", "Brazil", "Germany", "Japan", "Mexico", "North Korea",
-            "Venezuela", "Turkey", "South Korea", "Canada", "Australia",
-            "UAE", "South Africa", "France", "Nigeria", "Indonesia",
-            "Poland", "Kazakhstan",
+            "Australia", "Brazil", "Canada", "China", "France", "Germany",
+            "India", "Indonesia", "Iran", "Japan", "Kazakhstan", "Mexico",
+            "North Korea", "Poland", "Russia", "Saudi Arabia", "South Africa",
+            "South Korea", "Turkey", "UAE", "United States", "Venezuela",
         ])
-        _radar_defaults = ["China", "Russia", "Iran", "Brazil"]
-        radar_countries = st.multiselect(
-            "Comparar en Radar Chart",
-            options=all_countries,
-            default=[c for c in _radar_defaults if c in all_countries],
-        )
         highlight_countries = st.multiselect(
-            "Destacar en Simulador",
-            options=all_countries,
-            default=[c for c in ["Iran", "China", "Mexico"] if c in all_countries],
+            "Destacar en Simulador", options=all_countries,
+            default=["Iran", "China", "Mexico"],
         )
-
-        st.markdown("---")
-        st.markdown("### 📡 Estado de APIs")
-        api_placeholder = st.empty()
 
         st.markdown("---")
         st.markdown("""
-        <div style="font-size: 0.75rem; color: #3A5A7A; line-height: 1.6;">
+        <div style="font-size:0.72rem; color:#3A5A7A; line-height:1.7;">
         <b>Fuentes de datos:</b><br>
-        • Banco Mundial WDI<br>
-        • UN Comtrade HS2022<br>
-        • IMF IFS<br>
-        • OEC Economic Complexity<br>
-        • Voeten AGNU Dataset<br>
-        • OFAC / EU Sanctions Map<br><br>
-        <i>Modo offline activo cuando las APIs no responden.</i>
+        • World Bank WDI (GDP, energía, reservas)<br>
+        • UN Comtrade HS27/26/84<br>
+        • IMF IFS (reservas divisas)<br>
+        • OFAC / EU Sanctions Map<br>
+        • NewsAPI.org (noticias en vivo)<br><br>
+        <i>Modo offline-first activo.</i>
         </div>
         """, unsafe_allow_html=True)
 
     # ── CARGA DE DATOS ───────────────────────────────────────────────────────
     with st.spinner("Cargando base de datos geopolítica..."):
-        df_raw = build_geopolitical_database()
+        df_raw = build_database()
 
-    # Calcular ICG base (sin choque)
-    custom_weights = {"leverage": w_leverage, "resilience": w_resilience}
-    df_base  = compute_icg(df_raw.copy(), us_tariff_shock=0.0,   custom_weights=custom_weights)
-    df_shock = compute_icg(df_raw.copy(), us_tariff_shock=float(tariff), custom_weights=custom_weights)
+    # Noticias en vivo
+    news_articles: List[Dict] = []
+    news_deltas: Dict[str, float] = {}
 
-    # Estado de APIs
-    api_placeholder.markdown(f"""
-    | API | Estado |
-    |-----|--------|
-    | Banco Mundial | <span class="status-offline">⬤ Offline (proxy)</span> |
-    | UN Comtrade | <span class="status-offline">⬤ Offline (proxy)</span> |
-    | IMF | <span class="status-offline">⬤ Offline (proxy)</span> |
+    if fetch_news or (news_api_key and "news_articles" not in st.session_state):
+        with st.spinner("Consultando NewsAPI..."):
+            news_articles = fetch_news_live(news_api_key, news_query, page_size=25)
+            news_deltas   = compute_news_sanctions_delta(news_articles)
+            st.session_state["news_articles"] = news_articles
+            st.session_state["news_deltas"]   = news_deltas
+    elif "news_articles" in st.session_state:
+        news_articles = st.session_state["news_articles"]
+        news_deltas   = st.session_state["news_deltas"]
+
+    # Calcular ICG
+    df_base  = compute_icg(df_raw.copy(), us_tariff=0.0,
+                           w_leverage=w_lev, w_resilience=w_res,
+                           news_deltas=news_deltas if news_deltas else None)
+    df_shock = compute_icg(df_raw.copy(), us_tariff=float(tariff),
+                           w_leverage=w_lev, w_resilience=w_res,
+                           news_deltas=news_deltas if news_deltas else None)
+
+    # ── HEADER ───────────────────────────────────────────────────────────────
+    st.markdown(f"""
+    <div class="icg-header">
+        <div style="position:relative; z-index:1;">
+            <div class="icg-badge">⬡ Sistema de Análisis Geopolítico · v2.0 · {datetime.now().year}</div>
+            <h1 class="icg-title">Índice de Conversión Geoeconómica</h1>
+            <p style="color:#6B8BA4; font-size:0.92rem; margin:6px 0 0; max-width:680px;">
+                Mide la capacidad de un Estado para convertir sus recursos económicos en
+                poder político internacional. Integra datos del Banco Mundial, UN Comtrade,
+                IMF y noticias en tiempo real.
+            </p>
+            <div class="icg-formula">
+                ICG = √( Apalancamiento × Resiliencia ) ÷ ( 1 + Dependencia/100 ) − Penalidad
+            </div>
+        </div>
+    </div>
     """, unsafe_allow_html=True)
 
-    # ── MÉTRICAS RÁPIDAS ─────────────────────────────────────────────────────
-    col1, col2, col3, col4, col5 = st.columns(5)
-    top_country    = df_shock.iloc[0]["country"]
-    bottom_country = df_shock.iloc[-1]["country"]
-    avg_icg        = df_shock["icg"].mean()
-    usa_icg        = df_shock[df_shock["country"] == "United States"]["icg"].values
-    usa_icg_val    = usa_icg[0] if len(usa_icg) else 0.0
-    n_critical     = (df_shock["icg"] < 25).sum()
+    # ── MÉTRICAS ─────────────────────────────────────────────────────────────
+    c1, c2, c3, c4, c5 = st.columns(5)
+    top    = df_shock.iloc[0]
+    bottom = df_shock.iloc[-1]
+    avg    = df_shock["icg"].mean()
+    usa    = df_shock[df_shock["country"] == "United States"]["icg"]
+    usa_v  = usa.values[0] if len(usa) else 0.0
+    n_crit = int((df_shock["icg"] < 20).sum())
 
-    with col1:
-        st.markdown(f"""
+    usa_base = df_base[df_base["country"] == "United States"]["icg"]
+    delta_usa = (usa_v - usa_base.values[0]) if len(usa_base) else 0.0
+
+    for col, val, label, delta_str, dcolor in [
+        (c1, top["country"].split()[0], "🏆 Mayor ICG",
+         f'ICG = {top["icg"]:.1f}', "#4ADE80"),
+        (c2, bottom["country"].split()[0], "⚠️ Menor ICG",
+         f'ICG = {bottom["icg"]:.1f}', "#FF6B6B"),
+        (c3, f"{avg:.1f}", "📊 Promedio Global",
+         f'{len(df_shock)} países', "#6B8BA4"),
+        (c4, f"{usa_v:.1f}", "🇺🇸 ICG EE.UU.",
+         f'Δ {delta_usa:+.1f} con arancel', "#4ADE80" if delta_usa >= 0 else "#FF6B6B"),
+        (c5, str(n_crit), "🚨 Estados Críticos",
+         "ICG < 20 pts", "#6B8BA4"),
+    ]:
+        col.markdown(f"""
         <div class="metric-card">
-            <div class="metric-value" style="font-size: 1.6rem;">{top_country.split()[0]}</div>
-            <div class="metric-label">🏆 Mayor ICG</div>
-            <div class="metric-delta" style="color:#4ADE80;">
-                ICG = {df_shock.iloc[0]["icg"]:.1f}
-            </div>
+            <div class="metric-value" style="font-size:1.55rem;">{val}</div>
+            <div class="metric-label">{label}</div>
+            <div class="metric-delta" style="color:{dcolor};">{delta_str}</div>
         </div>""", unsafe_allow_html=True)
 
-    with col2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value" style="font-size: 1.6rem;">{bottom_country.split()[0]}</div>
-            <div class="metric-label">⚠️ Menor ICG</div>
-            <div class="metric-delta" style="color:#FF6B6B;">
-                ICG = {df_shock.iloc[-1]["icg"]:.1f}
-            </div>
-        </div>""", unsafe_allow_html=True)
+    # Alerta si hay ajuste por noticias
+    if news_deltas:
+        affected = ", ".join(f"**{c}** (+{v:.1f})" for c, v in
+                             sorted(news_deltas.items(), key=lambda x: -x[1])[:5])
+        st.markdown(
+            f'<div class="alert-box">📡 <b>Ajuste de sanciones por noticias en vivo:</b> '
+            f'{affected}</div>', unsafe_allow_html=True)
 
-    with col3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value">{avg_icg:.1f}</div>
-            <div class="metric-label">📊 ICG Promedio Global</div>
-            <div class="metric-delta" style="color:#6B8BA4;">Panel de {len(df_shock)} países</div>
-        </div>""", unsafe_allow_html=True)
-
-    with col4:
-        delta_usa = usa_icg_val - df_base[df_base["country"] == "United States"]["icg"].values[0] if tariff > 0 else 0.0
-        delta_color = "#4ADE80" if delta_usa >= 0 else "#FF6B6B"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value" style="color:#4A9ECA;">{usa_icg_val:.1f}</div>
-            <div class="metric-label">🇺🇸 ICG EE.UU.</div>
-            <div class="metric-delta" style="color:{delta_color};">
-                Δ {delta_usa:+.1f} con arancel
-            </div>
-        </div>""", unsafe_allow_html=True)
-
-    with col5:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value" style="color:#FF6B6B;">{n_critical}</div>
-            <div class="metric-label">🚨 Estados Críticos</div>
-            <div class="metric-delta" style="color:#6B8BA4;">ICG &lt; 25 puntos</div>
-        </div>""", unsafe_allow_html=True)
+    if tariff > 0:
+        st.markdown(
+            f'<div class="alert-box">⚡ <b>Arancel Trump activo: {tariff}%</b> — '
+            f'Los países con mayor dependencia de exportaciones a EE.UU. son los más afectados.</div>',
+            unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── TABS PRINCIPALES ─────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    # ── TABS ─────────────────────────────────────────────────────────────────
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🌍 Mapa Global",
-        "📊 Rankings y Matriz",
-        "🎯 Comparación",
-        "⚡ Simulador Trump 2026",
-        "📋 Datos y Metodología",
+        "📊 Rankings",
+        "🎯 Comparación Dual",
+        "⚡ Simulador Trump",
+        "📰 Noticias en Vivo",
+        "📋 Metodología",
     ])
 
     # ── TAB 1: MAPA ──────────────────────────────────────────────────────────
     with tab1:
-        map_col1, map_col2 = st.columns([3, 1])
-
-        with map_col2:
-            st.markdown("**Métrica del mapa**")
-            map_metric = st.radio(
-                "",
-                options=["icg", "leverage", "resilience", "dependence", "icg_delta"],
+        col_map, col_ctrl = st.columns([3.2, 0.8])
+        with col_ctrl:
+            st.markdown("**Métrica**")
+            metric = st.radio("", ["icg", "leverage", "resilience", "dependence", "icg_delta"],
                 format_func=lambda x: {
-                    "icg": "🌐 ICG Compuesto",
-                    "leverage": "⚡ Apalancamiento",
-                    "resilience": "🛡️ Resiliencia",
-                    "dependence": "🔗 Dependencia",
-                    "icg_delta": "📉 Δ ICG (Tariff)",
-                }[x],
-                label_visibility="collapsed",
-            )
+                    "icg": "🌐 ICG", "leverage": "⚡ Apalancamiento",
+                    "resilience": "🛡️ Resiliencia", "dependence": "🔗 Dependencia",
+                    "icg_delta": "📉 Δ ICG",
+                }[x], label_visibility="collapsed")
             st.markdown("---")
-            st.markdown(f"""
-            **Arancel activo:** `{tariff}%`  
-            **Peso Apalancamiento:** `{w_leverage}x`  
-            **Peso Resiliencia:** `{w_resilience}x`
-            """)
-            st.markdown("---")
-            st.markdown("**Leyenda ICG**")
-            for cat, color, rng in [
-                ("Dominante", "#00D4AA", "80-100"),
-                ("Fuerte",    "#3CB87A", "65-80"),
-                ("Intermedio","#E8A020", "45-65"),
-                ("Vulnerable","#C84B11", "25-45"),
-                ("Crítico",   "#7F1010", "0-25"),
+            for cat, clr, rng in [
+                ("Dominante", "#00D4AA", "80-100"), ("Fuerte",    "#3CB87A", "60-80"),
+                ("Intermedio","#E8A020", "40-60"),  ("Vulnerable","#C84B11", "20-40"),
+                ("Crítico",   "#7F1010", "0-20"),
             ]:
                 st.markdown(
-                    f'<span style="color:{color}; font-family:Space Mono; font-size:0.8rem;">'
-                    f'■ {cat}</span> <span style="color:#6B8BA4; font-size:0.75rem;">({rng})</span>',
-                    unsafe_allow_html=True
-                )
-
-        with map_col1:
-            df_map = df_shock if map_metric != "icg_delta" else df_shock
-            st.plotly_chart(render_choropleth(df_map, map_metric),
+                    f'<span style="color:{clr}; font-family:Space Mono; font-size:0.78rem;">■ {cat}</span> '
+                    f'<span style="color:#6B8BA4; font-size:0.73rem;">({rng})</span>',
+                    unsafe_allow_html=True)
+        with col_map:
+            st.plotly_chart(fig_choropleth(df_shock, metric),
                             use_container_width=True, config={"scrollZoom": True})
-
-        if tariff > 0:
-            st.markdown(
-                f'<div class="alert-box">⚡ <b>Arancel Trump activo: {tariff}%</b> — '
-                f'El mapa refleja el impacto sobre el ICG. Los países con mayor '
-                f'dependencia de exportaciones a EE.UU. son los más afectados.</div>',
-                unsafe_allow_html=True
-            )
 
     # ── TAB 2: RANKINGS ──────────────────────────────────────────────────────
     with tab2:
-        r_col1, r_col2 = st.columns([1.2, 1])
+        r1, r2 = st.columns([1.3, 1])
+        with r1:
+            n = st.slider("Número de países", 10, 22, 22, 1)
+            st.plotly_chart(fig_ranking_bar(df_shock, n), use_container_width=True)
+        with r2:
+            st.plotly_chart(fig_scatter_matrix(df_shock), use_container_width=True)
 
-        with r_col1:
-            n_countries = st.slider("Número de países en ranking", 10, 22, 20, 1)
-            st.plotly_chart(
-                render_icg_ranking_bar(df_shock, n=n_countries),
-                use_container_width=True
-            )
-
-        with r_col2:
-            st.plotly_chart(
-                render_scatter_leverage_resilience(df_shock),
-                use_container_width=True
-            )
-
-    # ── TAB 3: COMPARACIÓN ───────────────────────────────────────────────────
+    # ── TAB 3: COMPARACIÓN DUAL ───────────────────────────────────────────────
     with tab3:
-        c_col1, c_col2 = st.columns(2)
-        with c_col1:
-            st.plotly_chart(
-                render_radar_comparison(df_shock, radar_countries),
-                use_container_width=True
-            )
-        with c_col2:
-            st.plotly_chart(
-                render_sanctions_network(df_shock),
-                use_container_width=True
+        st.markdown('<div class="compare-header">⬡ RADAR DE COMPARACIÓN DIMENSIONAL</div>',
+                    unsafe_allow_html=True)
+        st.markdown("Selecciona dos países para analizar en qué dimensión gana cada uno.")
+
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            country_a = st.selectbox("🟢 País A", all_countries,
+                                     index=all_countries.index("United States"))
+        with cc2:
+            country_b = st.selectbox("🟡 País B", all_countries,
+                                     index=all_countries.index("China"))
+
+        if country_a == country_b:
+            st.warning("Selecciona dos países distintos para la comparación.")
+        else:
+            # Radar
+            st.plotly_chart(fig_radar_dual(df_shock, country_a, country_b),
+                            use_container_width=True)
+
+            # Tabla comparativa
+            st.markdown("#### Tabla Dimensión a Dimensión")
+            st.markdown(
+                build_comparison_table(df_shock, country_a, country_b),
+                unsafe_allow_html=True,
             )
 
-        # Tabla comparativa detallada
-        st.markdown("#### Tabla Comparativa Detallada")
-        if radar_countries:
-            df_table = df_shock[df_shock["country"].isin(radar_countries)][
-                ["country", "icg", "icg_category", "leverage", "resilience",
-                 "dependence", "sanctions_score", "us_export_pct", "gdp_bn"]
-            ].rename(columns={
-                "country": "País", "icg": "ICG", "icg_category": "Categoría",
-                "leverage": "Apalancamiento", "resilience": "Resiliencia",
-                "dependence": "Dependencia", "sanctions_score": "Sanciones (0-10)",
-                "us_export_pct": "% Exp. → EE.UU.", "gdp_bn": "PIB (bn USD)",
-            })
-            st.dataframe(
-                df_table.style.format({
-                    "ICG": "{:.1f}", "Apalancamiento": "{:.1f}",
-                    "Resiliencia": "{:.1f}", "Dependencia": "{:.1f}",
-                    "Sanciones (0-10)": "{:.1f}", "% Exp. → EE.UU.": "{:.1f}",
-                    "PIB (bn USD)": "{:,.0f}",
-                }).background_gradient(subset=["ICG"], cmap="RdYlGn"),
-                use_container_width=True, hide_index=True,
-            )
+            # Resumen interpretativo
+            ra = df_shock[df_shock["country"] == country_a].iloc[0]
+            rb = df_shock[df_shock["country"] == country_b].iloc[0]
+            winner_icg    = country_a if ra["icg"] > rb["icg"] else country_b
+            winner_lev    = country_a if ra["leverage"] > rb["leverage"] else country_b
+            winner_res    = country_a if ra["resilience"] > rb["resilience"] else country_b
+            winner_indep  = country_a if ra["dependence"] < rb["dependence"] else country_b
 
-    # ── TAB 4: SIMULADOR TRUMP 2026 ──────────────────────────────────────────
+            st.markdown(f"""
+            <div style="background:#0A1628; border:1px solid #1E3A5F; border-radius:10px;
+                        padding:16px 20px; margin-top:14px;">
+                <span style="font-family:Space Mono; font-size:0.75rem; color:#4A9ECA;
+                             letter-spacing:0.1em;">SÍNTESIS COMPARATIVA</span><br><br>
+                <span style="font-size:0.87rem; color:#C8D6E5; line-height:2;">
+                🏆 <b>Mayor ICG global:</b> {winner_icg}<br>
+                ⚡ <b>Mayor apalancamiento</b> (exportaciones + reservas): {winner_lev}<br>
+                🛡️ <b>Mayor resiliencia</b> (energía + alimentos): {winner_res}<br>
+                🔓 <b>Mayor autonomía estratégica</b> (menor dependencia): {winner_indep}
+                </span>
+            </div>""", unsafe_allow_html=True)
+
+    # ── TAB 4: SIMULADOR TRUMP ────────────────────────────────────────────────
     with tab4:
         st.markdown("""
-        <div class="alert-box" style="border-color: rgba(240,180,41,0.6); font-size:0.92rem;">
+        <div class="alert-box" style="border-color:rgba(240,180,41,0.5); font-size:0.9rem;">
         <b>🎯 Caso de Estudio: Aranceles Trump 2026</b><br>
-        Este simulador modela el impacto de los aranceles sobre el ICG de cada nación. 
-        El choque se transmite a través de la variable <i>Dependencia Externa</i>: 
-        países con alta dependencia del mercado estadounidense ven caer su ICG más 
-        intensamente. <b>El arancel activo actualmente es: {}</b>%
-        </div>
-        """.format(tariff), unsafe_allow_html=True)
+        El simulador transmite el choque arancelario a través de la fórmula:<br>
+        <code>Penalidad_i = (exp_EE.UU._i / 100) × (T / 100) × 0.70 × 100</code><br>
+        Factor de fricción 0.70: no toda la producción afectada se redirige perfectamente.
+        </div>""", unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
-
-        # Panel superior: impacto global
-        st.plotly_chart(
-            render_tariff_impact_chart(df_base, df_shock, highlight_countries),
-            use_container_width=True
-        )
+        st.plotly_chart(fig_tariff_impact(df_base, df_shock, highlight_countries),
+                        use_container_width=True)
 
         st.markdown("---")
         st.markdown("#### 🔮 Trayectoria de País Específico")
-        sim_col1, sim_col2 = st.columns([1, 3])
-
-        with sim_col1:
+        sc1, sc2 = st.columns([1, 3])
+        with sc1:
             country_sim = st.selectbox(
-                "País a simular",
-                options=sorted(df_base["country"].tolist()),
-                index=sorted(df_base["country"].tolist()).index("Iran") if "Iran" in df_base["country"].tolist() else 0,
-            )
-            sim_resolution = st.radio(
-                "Resolución", ["Baja (5%)", "Alta (1%)"],
-                help="Alta resolución es más lenta pero más precisa"
-            )
-            step = 5 if "Baja" in sim_resolution else 1
+                "País a simular", sorted(df_base["country"].tolist()),
+                index=sorted(df_base["country"].tolist()).index("Iran")
+                      if "Iran" in df_base["country"].tolist() else 0)
+            reso = st.radio("Resolución", ["Baja (5%)", "Alta (1%)"])
+        with sc2:
+            step_val = 5 if "Baja" in reso else 1
+            with st.spinner(f"Simulando para {country_sim}..."):
+                st.plotly_chart(fig_tariff_trajectory(df_raw.copy(), country_sim, step_val),
+                                use_container_width=True)
 
-        with sim_col2:
-            tariff_range = np.arange(0, 101, step)
-            with st.spinner(f"Simulando {len(tariff_range)} escenarios para {country_sim}..."):
-                fig_traj = render_tariff_time_simulation(
-                    df_raw.copy(), country_sim, tariff_range
-                )
-            st.plotly_chart(fig_traj, use_container_width=True)
-
-        # Panel de interpretación
-        country_data = df_shock[df_shock["country"] == country_sim]
-        if not country_data.empty:
-            cd = country_data.iloc[0]
-            icg_t  = cd["icg"]
-            icg_b  = df_base[df_base["country"] == country_sim]["icg"].values[0]
-            delta  = icg_t - icg_b
-            us_dep = cd["us_export_pct"]
-
-            interp_color = "#FF6B6B" if delta < -5 else "#F0B429" if delta < 0 else "#4ADE80"
+        # Panel interpretación
+        cd  = df_shock[df_shock["country"] == country_sim]
+        if not cd.empty:
+            row = cd.iloc[0]
+            icg_now  = row["icg"]
+            icg_base = df_base[df_base["country"] == country_sim]["icg"].values[0]
+            delta    = icg_now - icg_base
+            dep_pct  = row["us_export_pct"]
+            ic       = "#FF6B6B" if delta < -5 else "#F0B429" if delta < 0 else "#4ADE80"
+            msg = (f"⚠️ <b>Alta vulnerabilidad:</b> {country_sim} exporta {dep_pct:.1f}% a EE.UU. "
+                   f"Un arancel de {tariff}% erosiona significativamente su ICG."
+                   if dep_pct > 20 else
+                   f"⚡ <b>Exposición moderada:</b> {dep_pct:.1f}% hacia EE.UU. Impacto contenido."
+                   if dep_pct > 5 else
+                   f"🛡️ <b>Alta resiliencia al choque:</b> Solo {dep_pct:.1f}% expo a EE.UU. "
+                   f"El ICG de {country_sim} depende de otros vectores.")
             st.markdown(f"""
-            <div style="background:#0A1628; border:1px solid #1E3A5F; border-radius:10px; padding:18px; margin-top:12px;">
-                <span style="font-family:Space Mono; font-size:0.8rem; color:#4A9ECA; letter-spacing:0.1em;">
-                ANÁLISIS — {country_sim.upper()} · ARANCEL EE.UU. {tariff}%
+            <div style="background:#0A1628; border:1px solid #1E3A5F; border-radius:10px;
+                        padding:16px 20px; margin-top:12px;">
+                <span style="font-family:Space Mono; font-size:0.78rem; color:#4A9ECA;">
+                    ANÁLISIS — {country_sim.upper()} · ARANCEL {tariff}%
                 </span><br><br>
-                <span style="font-family:Space Mono; font-size:1.3rem; color:{interp_color};">
-                ΔICG = {delta:+.2f} pts
+                <span style="font-family:Space Mono; font-size:1.25rem; color:{ic};">
+                    ΔICG = {delta:+.2f} pts
                 </span>
-                &nbsp;&nbsp;|&nbsp;&nbsp;
-                <span style="color:#6B8BA4; font-size:0.9rem;">
-                ICG base: {icg_b:.1f} → ICG actual: {icg_t:.1f}
+                &nbsp;|&nbsp;
+                <span style="color:#6B8BA4; font-size:0.88rem;">
+                    {icg_base:.1f} → {icg_now:.1f}
                 </span><br><br>
-                <span style="font-size:0.88rem; color:#C8D6E5; line-height:1.8;">
-                {'⚠️ <b>Alta vulnerabilidad:</b> ' + f'{country_sim} exporta {us_dep:.1f}% a EE.UU. Un arancel de {tariff}% erosiona significativamente su capacidad de conversión geoeconómica.' if us_dep > 20 else
-                 '⚡ <b>Exposición moderada:</b> ' + f'{country_sim} tiene una dependencia de {us_dep:.1f}% hacia el mercado estadounidense. El impacto es contenido pero acumulable.' if us_dep > 5 else
-                 '🛡️ <b>Alta resiliencia al choque:</b> ' + f'Con solo {us_dep:.1f}% de exportaciones hacia EE.UU., {country_sim} absorbe bien el choque arancelario. Su ICG depende de otros vectores.'}
-                </span>
-            </div>
-            """, unsafe_allow_html=True)
+                <span style="font-size:0.86rem; color:#C8D6E5;">{msg}</span>
+            </div>""", unsafe_allow_html=True)
 
-    # ── TAB 5: DATOS Y METODOLOGÍA ───────────────────────────────────────────
+    # ── TAB 5: NOTICIAS EN VIVO ───────────────────────────────────────────────
     with tab5:
-        m_col1, m_col2 = st.columns(2)
+        st.markdown("#### 📡 Monitor de Sanciones y Aranceles en Tiempo Real")
+        st.markdown(
+            "Las noticias detectadas como relevantes ajustan automáticamente el "
+            "`sanctions_score` de los países mencionados, lo que modifica su ICG en "
+            "tiempo real. Introduce tu **NewsAPI key** en el panel lateral para activar esta función."
+        )
 
-        with m_col1:
-            st.markdown("#### 📐 Metodología del ICG")
+        if not news_articles:
+            st.info(
+                "No hay noticias cargadas. Introduce una NewsAPI key en el panel lateral "
+                "y pulsa **Actualizar noticias**. Registro gratuito en [newsapi.org](https://newsapi.org/register)."
+            )
+        else:
+            n1, n2 = st.columns([2, 1])
+            with n1:
+                st.markdown(f"**{len(news_articles)} artículos analizados** — "
+                            f"{sum(1 for a in news_articles if a['impact'] >= 2)} de alto impacto")
+                for art in news_articles[:15]:
+                    impact_lvl = "high" if art["impact"] >= 2 else "medium" if art["impact"] == 1 else "low"
+                    impact_lbl = {
+                        "high": '<span class="news-impact-badge badge-high">ALTO</span>',
+                        "medium": '<span class="news-impact-badge badge-medium">MEDIO</span>',
+                        "low": '<span class="news-impact-badge badge-low">BAJO</span>',
+                    }[impact_lvl]
+                    countries_str = (", ".join(art["countries"][:3]) if art["countries"]
+                                     else "<span style='color:#3A5A7A'>Sin país detectado</span>")
+                    pub_short = art["published"][:10] if art["published"] else "—"
+                    st.markdown(f"""
+                    <div class="news-card">
+                        <div class="news-title">{art['title']} {impact_lbl}</div>
+                        <div class="news-meta">
+                            {art['source']} · {pub_short} · Países: {countries_str}
+                            · <a href="{art['url']}" target="_blank"
+                               style="color:#4A9ECA; text-decoration:none;">Leer →</a>
+                        </div>
+                    </div>""", unsafe_allow_html=True)
+
+            with n2:
+                if news_deltas:
+                    st.markdown("**Ajuste automático de sanciones**")
+                    st.plotly_chart(fig_news_sanction_bars(news_deltas),
+                                    use_container_width=True)
+                    st.markdown("**Países más afectados por noticias:**")
+                    for c, delta in sorted(news_deltas.items(), key=lambda x: -x[1])[:8]:
+                        bar_w = int(delta / 2.5 * 100)
+                        st.markdown(f"""
+                        <div style="margin:4px 0;">
+                            <span style="font-family:Space Mono; font-size:0.8rem; color:#C8D6E5;">
+                                {c}
+                            </span>
+                            <div style="background:#1A3050; border-radius:3px; height:6px; margin-top:3px;">
+                                <div style="background:#F0B429; width:{bar_w}%;
+                                            height:6px; border-radius:3px;"></div>
+                            </div>
+                            <span style="font-family:Space Mono; font-size:0.72rem; color:#F0B429;">
+                                +{delta:.2f} pts sanciones
+                            </span>
+                        </div>""", unsafe_allow_html=True)
+                else:
+                    st.info("Carga noticias para ver el ajuste por país.")
+
+    # ── TAB 6: METODOLOGÍA ────────────────────────────────────────────────────
+    with tab6:
+        m1, m2 = st.columns(2)
+        with m1:
+            st.markdown("#### 📐 Fórmula y Calibración")
             st.markdown(r"""
-**Fórmula central:**
-$$ICG = \frac{Apalancamiento^{w_L} \times Resiliencia^{w_R}}{Dependencia\_Externa}$$
+**Fórmula central (v3):**
 
-**Componentes:**
+$$ICG = \frac{\sqrt{L^{w_L} \times R^{w_R}}}{1 + D/100} - Penalidad_{Arancelaria}$$
 
-| Subíndice | Variables | Ponderación |
-|-----------|-----------|-------------|
-| Apalancamiento | Export. críticas (ln) + Reservas divisas (ln) − Sanción penalty | 55% + 35% + 10% |
-| Resiliencia | Energía neta exportada + Autosuficiencia alimentaria + Bono PIB | 45% + 45% + 10% |
-| Dependencia | Expo. → EE.UU. + Score sanciones + Penalidad arancel | 60% + 25% + 15% |
+**Subíndices:**
 
-**Escala final:** Reescalado a [0, 100] en el panel de países.
+| | Variables | Pesos |
+|---|---|---|
+| **L** Apalancamiento | ln(Exp. críticas) + ln(Reservas) − Sanciones | 55%+35%−10% |
+| **R** Resiliencia | −Energía importada + Autosuf. alimentaria + Bono PIB | 50%+50%+bono |
+| **D** Dependencia | Expo→EE.UU. + Sanciones (normaliz.) | 65%+35% |
 
-**Umbrales interpretativos:**
-- ICG > 80: Potencia con alta capacidad de coerción económica
-- ICG 60-80: Estado fuerte con vectores de influencia regional
-- ICG 40-60: Posición intermedia, vulnerable a presiones externas
-- ICG 20-40: Dependencia estructural, margen de maniobra reducido
-- ICG < 20: Estado geoeconómicamente frágil
+**Penalidad arancelaria:**
 
-**Efecto Trump 2026 (simulador):**
+$$Pen_i = \frac{exp_{EE.UU.,i}}{100} \times \frac{T}{100} \times 0.70 \times 100 \times 0.25$$
 
-$$\Delta Dependencia_i = \frac{Expo_{EE.UU.,i}}{100} \times T_{arancel} \times 1.5$$
+(0.70 = friction factor; 0.25 = escala al ICG)
 
-donde 1.5 es el *friction multiplier*: no todas las exportaciones 
-afectadas se redirigen perfectamente a mercados alternativos.
-            """)
+**Ajuste por noticias:**
 
-        with m_col2:
+$$\Delta S_i = \sum_j \frac{impact_j}{3} \times w_{temporal} \times 0.8$$
+
+donde $w_{temporal}$ = 2.0 si < 6h, 1.5 si < 24h, 1.0 en otro caso.
+
+**Calibración validada:**
+
+| País | ICG base | Δ arancel 100% |
+|---|---|---|
+| EE.UU. | 100.0 | 0.0 |
+| Arabia Saudí | 96.0 | −2.4 |
+| Rusia | 83.5 | −0.3 |
+| China | 76.0 | −4.7 |
+| Canadá | 68.2 | −20.4 |
+| México | 39.1 | **−22.3** |
+| Irán | 49.3 | 0.0 |
+""")
+
+        with m2:
             st.markdown("#### 🔌 Arquitectura de APIs")
             st.code("""
-# ── Banco Mundial (wbgapi) ─────────────────────
+# ── Banco Mundial ────────────────────────
 import wbgapi as wb
 
-# PIB por país (USD corrientes 2022)
-gdp = wb.data.DataFrame(
-    "NY.GDP.MKTP.CD",
-    economy="all",
-    mrv=1
-)
+# PIB (NY.GDP.MKTP.CD)
+gdp = wb.data.DataFrame("NY.GDP.MKTP.CD",
+    economy="all", mrv=1)
 
-# Importaciones de energía (% consumo total)
-energy = wb.data.DataFrame(
-    "EG.IMP.CONS.ZS",
-    economy="all",
-    mrv=1
-)
+# Energía (EG.IMP.CONS.ZS)
+energy = wb.data.DataFrame("EG.IMP.CONS.ZS",
+    economy="all", mrv=1)
 
-# Reservas totales incluido oro
-reserves = wb.data.DataFrame(
-    "FI.RES.TOTL.CD",
-    economy="all",
-    mrv=1
-)
+# Reservas (FI.RES.TOTL.CD)
+res = wb.data.DataFrame("FI.RES.TOTL.CD",
+    economy="all", mrv=1)
 
-# ── UN Comtrade API ────────────────────────────
-# Exportaciones combustibles HS-27 (petróleo+gas)
-url = (
-    "https://comtradeapi.un.org/public/v1/preview"
-    "/C/A/HS?reporterCode=156"  # China=156
-    "&period=2022&cmdCode=27"
-    "&flowCode=X&partnerCode=0"
-)
-headers = {"Ocp-Apim-Subscription-Key": API_KEY}
-resp = requests.get(url, headers=headers)
-exports = resp.json()["data"]
+# ── UN Comtrade ──────────────────────────
+# HS 27 = Combustibles minerales
+url = ("https://comtradeapi.un.org/public/v1"
+       "/preview/C/A/HS?reporterCode=156"
+       "&period=2022&cmdCode=27&flowCode=X")
+data = requests.get(url, headers={
+    "Ocp-Apim-Subscription-Key": KEY
+}).json()["data"]
 
-# ── IMF IFS API ────────────────────────────────
-# Reservas de divisas (USD millones)
-imf_url = (
+# ── IMF IFS ──────────────────────────────
+# Reservas de divisas por país
+imf = requests.get(
     "http://dataservices.imf.org/REST"
     "/SDMX_JSON.svc/CompactData"
     "/IFS/Q.CN.RESERVES.FX"
     "?startPeriod=2022&endPeriod=2022"
-)
-reserves_imf = requests.get(imf_url).json()
+).json()
+
+# ── NewsAPI ───────────────────────────────
+news = requests.get(
+    "https://newsapi.org/v2/everything",
+    params={"q": "sanctions tariffs",
+            "sortBy": "publishedAt",
+            "pageSize": 25,
+            "apiKey": NEWS_KEY}
+).json()["articles"]
             """, language="python")
 
-            st.markdown("#### 📦 Instalación")
+            st.markdown("#### 📦 Instalación y ejecución")
             st.code("""
-# Dependencias del proyecto
-pip install streamlit plotly pandas numpy 
-pip install requests wbgapi
+# Instalar dependencias
+pip install streamlit plotly pandas numpy requests wbgapi
 
-# Opcional (mejor rendimiento con APIs)
-pip install comtradeapicall  # Wrapper oficial UN Comtrade
-pip install imf-reader        # Wrapper IMF Data API
+# Configurar API keys (.streamlit/secrets.toml)
+[secrets]
+COMTRADE_KEY = "tu-key-comtrade"
+NEWS_API_KEY = "tu-key-newsapi"
+# Banco Mundial e IMF: sin key requerida
 
-# Ejecución
+# Ejecutar
 streamlit run icg_dashboard.py
             """, language="bash")
 
-            st.markdown("#### 🗝️ Configuración de API Keys")
-            st.code("""
-# Crea .streamlit/secrets.toml en la raíz del proyecto
-# UN Comtrade requiere key para >100 req/hora
-
-[secrets]
-COMTRADE_KEY = "tu-api-key-aquí"
-# Obtener en: https://comtradeapi.un.org/
-
-# El Banco Mundial y el IMF NO requieren key
-# para uso estándar (con límites de tasa)
-            """, language="toml")
-
-        # Tabla de datos completa
+        # Tabla completa de datos
         st.markdown("---")
         st.markdown("#### 🗃️ Base de Datos Completa")
 
-        col_filter, col_sort = st.columns(2)
-        with col_filter:
-            cat_filter = st.multiselect(
-                "Filtrar por categoría ICG",
-                options=["Dominante", "Fuerte", "Intermedio", "Vulnerable", "Crítico"],
-                default=["Dominante", "Fuerte", "Intermedio", "Vulnerable", "Crítico"],
-            )
-        with col_sort:
-            sort_by = st.selectbox(
-                "Ordenar por",
-                options=["icg", "leverage", "resilience", "dependence",
-                         "gdp_bn", "us_export_pct", "sanctions_score"],
+        fcol, scol = st.columns(2)
+        with fcol:
+            cat_f = st.multiselect("Filtrar categoría",
+                ["Dominante", "Fuerte", "Intermedio", "Vulnerable", "Crítico"],
+                default=["Dominante", "Fuerte", "Intermedio", "Vulnerable", "Crítico"])
+        with scol:
+            sort_f = st.selectbox("Ordenar por",
+                ["icg", "leverage", "resilience", "dependence",
+                 "gdp_bn", "us_export_pct", "sanctions_score"],
                 format_func=lambda x: {
                     "icg": "ICG", "leverage": "Apalancamiento",
                     "resilience": "Resiliencia", "dependence": "Dependencia",
                     "gdp_bn": "PIB (bn USD)", "us_export_pct": "% Expo → EE.UU.",
-                    "sanctions_score": "Sanciones (0-10)",
-                }[x]
-            )
+                    "sanctions_score": "Sanciones",
+                }[x])
 
-        df_display = df_shock[
-            df_shock["icg_category"].astype(str).isin(cat_filter)
-        ].sort_values(sort_by, ascending=False)[
-            ["country", "icg", "icg_category", "leverage", "resilience",
-             "dependence", "gdp_bn", "export_critical_bn", "forex_reserves_bn",
-             "energy_import_pct", "food_self_sufficiency", "us_export_pct",
-             "sanctions_score", "icg_delta"]
-        ].rename(columns={
-            "country": "País", "icg": "ICG", "icg_category": "Categoría",
-            "leverage": "Apalancam.", "resilience": "Resiliencia",
-            "dependence": "Dependencia", "gdp_bn": "PIB (bn $)",
-            "export_critical_bn": "Exp.Crít. (bn$)", "forex_reserves_bn": "Reservas (bn$)",
-            "energy_import_pct": "Energía imp.%", "food_self_sufficiency": "Autosuf.Alim.",
-            "us_export_pct": "Exp.→EE.UU.%", "sanctions_score": "Sanciones",
-            "icg_delta": "ΔICG (Tariff)",
-        })
+        disp = df_shock[df_shock["icg_category"].astype(str).isin(cat_f)]\
+            .sort_values(sort_f, ascending=False)[[
+                "country", "icg", "icg_category", "leverage", "resilience",
+                "dependence", "gdp_bn", "export_critical_bn", "forex_reserves_bn",
+                "energy_import_pct", "food_self_sufficiency",
+                "us_export_pct", "sanctions_score", "icg_delta",
+            ]].rename(columns={
+                "country": "País", "icg": "ICG", "icg_category": "Categoría",
+                "leverage": "Apalancam.", "resilience": "Resiliencia",
+                "dependence": "Dependencia", "gdp_bn": "PIB (bn$)",
+                "export_critical_bn": "Exp.Crít.", "forex_reserves_bn": "Reservas",
+                "energy_import_pct": "Energía imp.%", "food_self_sufficiency": "Alim.%",
+                "us_export_pct": "Exp.→EE.UU.%", "sanctions_score": "Sanciones",
+                "icg_delta": "ΔICG",
+            })
 
         st.dataframe(
-            df_display.style.format({
+            disp.style.format({
                 "ICG": "{:.1f}", "Apalancam.": "{:.1f}", "Resiliencia": "{:.1f}",
-                "Dependencia": "{:.1f}", "PIB (bn $)": "{:,.0f}",
-                "Exp.Crít. (bn$)": "{:.0f}", "Reservas (bn$)": "{:.0f}",
-                "Energía imp.%": "{:.0f}", "Autosuf.Alim.": "{:.0f}",
-                "Exp.→EE.UU.%": "{:.1f}", "Sanciones": "{:.1f}",
-                "ΔICG (Tariff)": "{:+.2f}",
+                "Dependencia": "{:.1f}", "PIB (bn$)": "{:,.0f}",
+                "Exp.Crít.": "{:.0f}", "Reservas": "{:.0f}",
+                "Energía imp.%": "{:.0f}", "Alim.%": "{:.0f}",
+                "Exp.→EE.UU.%": "{:.1f}", "Sanciones": "{:.1f}", "ΔICG": "{:+.2f}",
             }).background_gradient(subset=["ICG"], cmap="RdYlGn", vmin=0, vmax=100)
-             .background_gradient(subset=["ΔICG (Tariff)"], cmap="RdYlGn", vmin=-20, vmax=5),
-            use_container_width=True, hide_index=True, height=480,
+             .background_gradient(subset=["ΔICG"], cmap="RdYlGn", vmin=-25, vmax=5),
+            use_container_width=True, hide_index=True, height=460,
         )
 
     # ── FOOTER ───────────────────────────────────────────────────────────────
     st.markdown("""
-    <div style="text-align: center; padding: 30px 0 10px; 
-                border-top: 1px solid #1A3050; margin-top: 30px;">
-        <span style="font-family: Space Mono, monospace; font-size: 0.75rem; 
-                     color: #3A5A7A; letter-spacing: 0.12em;">
-        ICG DASHBOARD v1.0 · CIENCIA DE DATOS & GEOPOLÍTICA<br>
-        Datos: World Bank WDI · UN Comtrade · IMF IFS · OEC · OFAC<br>
-        Proxy sintético cuando APIs no responden (modo offline-first)
+    <div style="text-align:center; padding:24px 0 8px;
+                border-top:1px solid #1A3050; margin-top:28px;">
+        <span style="font-family:Space Mono,monospace; font-size:0.72rem;
+                     color:#2A4A6A; letter-spacing:0.12em;">
+        ICG DASHBOARD v2.0 · CIENCIA DE DATOS & GEOPOLÍTICA<br>
+        World Bank WDI · UN Comtrade · IMF IFS · NewsAPI.org · OFAC
         </span>
     </div>
     """, unsafe_allow_html=True)
