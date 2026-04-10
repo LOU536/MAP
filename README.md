@@ -1,19 +1,18 @@
-# MAP
-# 🌐 ICG — Índice de Conversión Geoeconómica
+# 🌐 ICG — Índice de Conversión Geoeconómica v2.0
 
-**Dashboard interactivo de análisis geopolítico** construido con Streamlit y Plotly. Mide la capacidad de un Estado para convertir sus recursos económicos en poder político internacional, e incluye un simulador de escenarios arancelarios para el caso Trump 2026.
+**Dashboard interactivo de análisis geopolítico** construido con Streamlit y Plotly. Mide la capacidad de un Estado para convertir sus recursos económicos en poder político internacional, con simulador de escenarios arancelarios Trump 2026, radar de comparación dual y monitor de sanciones en tiempo real vía noticias.
 
 ---
 
 ## ¿Qué es el ICG?
 
-El Índice de Conversión Geoeconómica (ICG) responde a una pregunta central en la ciencia política internacional: dado que dos países tienen recursos similares, ¿por qué uno ejerce más influencia que el otro? La respuesta no está solo en el tamaño de la economía, sino en la capacidad de *convertir* esos recursos en palancas de poder —y en el grado en que la dependencia externa limita esa conversión.
+El Índice de Conversión Geoeconómica responde a una pregunta central en la ciencia política internacional: dado que dos países tienen recursos similares, ¿por qué uno ejerce más influencia que el otro? La respuesta no está solo en el tamaño de la economía, sino en la capacidad de *convertir* esos recursos en palancas de poder —y en el grado en que la dependencia externa limita esa conversión.
 
-### Fórmula central
+### Fórmula central (calibrada v3)
 
-$$ICG = \frac{\sqrt{Apalancamiento^{w_L} \times Resiliencia^{w_R}}}{1 + \frac{Dependencia\_Externa}{100}} - Penalidad_{Arancelaria}$$
+$$ICG = \frac{\sqrt{Apalancamiento^{w_L} \times Resiliencia^{w_R}}}{1 + \frac{Dependencia}{100}} - Penalidad_{Arancelaria}$$
 
-Los pesos $w_L$ y $w_R$ son ajustables desde el panel lateral del dashboard. La penalidad arancelaria es el mecanismo del **Simulador Trump 2026**.
+Los pesos $w_L$ y $w_R$ son ajustables desde el panel lateral. La penalidad arancelaria activa el **Simulador Trump 2026**.
 
 ### Componentes
 
@@ -21,7 +20,7 @@ Los pesos $w_L$ y $w_R$ son ajustables desde el panel lateral del dashboard. La 
 |---|---|---|
 | **Apalancamiento** | Exportaciones críticas (HS27+HS26+HS84), reservas de divisas y oro, penalidad por sanciones activas | UN Comtrade, IMF IFS |
 | **Resiliencia** | Autosuficiencia energética (exportaciones netas), autosuficiencia alimentaria, bono por tamaño de economía | World Bank WDI, FAO |
-| **Dependencia Externa** | % exportaciones hacia potencia hegemónica regional, score de sanciones internacionales | WITS/World Bank, OFAC |
+| **Dependencia Externa** | % exportaciones hacia EE.UU., score de sanciones internacionales | WITS/World Bank, OFAC |
 
 ### Escala de interpretación
 
@@ -35,19 +34,22 @@ Los pesos $w_L$ y $w_R$ son ajustables desde el panel lateral del dashboard. La 
 
 ---
 
-## Características del dashboard
+## Características del dashboard (v2.0)
 
-### Mapa coroplético global
-Visualización interactiva que colorea cada país según su ICG (o cualquiera de sus componentes). Cambia entre *ICG compuesto*, *Apalancamiento*, *Resiliencia*, *Dependencia* y *Δ ICG con arancel activo* desde el panel lateral. Basado en Plotly Express con proyección Natural Earth.
+### 🌍 Mapa coroplético global
+Colorea cada país según su ICG o cualquiera de sus componentes. Cambia entre ICG compuesto, Apalancamiento, Resiliencia, Dependencia y Δ ICG con arancel activo. Proyección Natural Earth con zoom interactivo.
 
-### Simulador Trump 2026
-Slider de 0 % a 100 % que modela el impacto de aranceles estadounidenses sobre el ICG de cada nación. El mecanismo de transmisión es directo y documentado:
+### 🎯 Radar de comparación dual *(nuevo en v2.0)*
+Selecciona dos países y compara sus perfiles en cuatro dimensiones simultáneamente: Apalancamiento, Resiliencia, Autonomía Estratégica e ICG Global. Una tabla muestra con badge **✓ Gana** la dimensión en que cada país supera al otro, y un párrafo interpretativo resume quién lidera en cada vector.
+
+### ⚡ Simulador Trump 2026
+Slider de 0 % a 100 % que modela el impacto de aranceles estadounidenses en tiempo real:
 
 ```
-Penalidad_i = (us_export_pct_i / 100) × (T_arancel / 100) × 0.70 × 100
+Penalidad_i = (expo_EE.UU._i / 100) × (T / 100) × 0.70 × 100 × 0.25
 ```
 
-El factor de fricción 0.70 refleja que no toda la producción afectada se redirige perfectamente a mercados alternativos. Resultados validados:
+El factor 0.70 refleja que los países redirigen parte de sus exportaciones a otros mercados. Resultados validados:
 
 | País | ICG base | Arancel 100 % | Δ |
 |---|---|---|---|
@@ -57,87 +59,67 @@ El factor de fricción 0.70 refleja que no toda la producción afectada se redir
 | Irán | 49.3 | 49.3 | 0.0 pts (ya embargado) |
 | Rusia | 83.5 | 83.1 | −0.3 pts |
 
-### Matriz geopolítica de cuadrantes
-Scatter plot Apalancamiento vs. Resiliencia con burbujas proporcionales al PIB. Divide el espacio en cuatro cuadrantes: Potencias Globales, Autarquías Resilientes, Potencias Vulnerables y Estados Frágiles.
+### 📰 Noticias en vivo con ajuste automático de sanciones *(nuevo en v2.0)*
+Con una API key de NewsAPI.org (gratuita, 100 req/día), el dashboard consulta titulares en tiempo real, detecta países mencionados en noticias de sanciones o aranceles, y ajusta automáticamente su `sanctions_score`. Los artículos de menos de 6 horas pesan el doble. El ajuste se propaga inmediatamente al ICG de todos los países.
 
-### Radar de comparación multidimensional
-Selecciona hasta seis países desde el panel lateral y compara sus perfiles dimensionales en un gráfico de radar superpuesto.
+### 📊 Matriz geopolítica de cuadrantes
+Scatter plot Apalancamiento vs. Resiliencia con burbujas proporcionales al PIB. Divide el espacio en: Potencias Globales, Autarquías Resilientes, Potencias Vulnerables y Estados Frágiles.
 
-### Zona de sombra arancelaria
-Scatter plot Sanciones vs. ICG que identifica los países más expuestos a la presión estadounidense y con menor capacidad de absorber un choque externo.
-
-### Trayectoria de país específico
-Simulación continua del ICG de un país seleccionado a lo largo de toda la escala arancelaria (0–100 %), con tres escenarios (optimista, base, pesimista) y bandas de incertidumbre calculadas por bootstrap.
+### 🔮 Trayectoria de país específico
+Simulación continua del ICG de un país a lo largo de toda la escala arancelaria (0–100 %), con tres escenarios (optimista, base, pesimista) y bandas de incertidumbre.
 
 ---
 
 ## Instalación
 
 ```bash
-# Dependencias mínimas
-pip install streamlit plotly pandas numpy requests wbgapi
-
-# Opcional — wrappers oficiales de APIs
-pip install comtradeapicall   # UN Comtrade oficial
-pip install imf-reader        # IMF Data API
-
-# Clonar y ejecutar
-git clone https://github.com/tu-usuario/icg-dashboard.git
-cd icg-dashboard
+pip install streamlit plotly pandas numpy requests
 streamlit run icg_dashboard.py
 ```
 
-El dashboard se abre automáticamente en `http://localhost:8501`.
+El dashboard abre en `http://localhost:8501` y funciona sin ninguna API key gracias al modo **offline-first**.
+
+---
+
+## requirements.txt
+
+Tu archivo actual es suficiente:
+
+```
+streamlit
+pandas
+plotly
+numpy
+requests
+```
+
+Si quieres activar la conexión directa al Banco Mundial, añade:
+
+```
+wbgapi
+```
+
+No hay ninguna otra dependencia requerida.
 
 ---
 
 ## Configuración de API keys
 
-Crea el archivo `.streamlit/secrets.toml` en la raíz del proyecto:
+Crea `.streamlit/secrets.toml`. Ambas son completamente opcionales:
 
 ```toml
-# UN Comtrade — necesaria para más de 100 req/hora
-# Registro gratuito: https://comtradeapi.un.org/
-COMTRADE_KEY = "tu-api-key-aquí"
+# NewsAPI — noticias en vivo para ajuste automático de sanciones
+# Gratuita (100 req/día): https://newsapi.org/register
+NEWS_API_KEY = "tu-key-newsapi"
+
+# UN Comtrade — para superar el límite de 100 req/hora
+# Registro: https://comtradeapi.un.org/
+COMTRADE_KEY = "tu-key-comtrade"
+
+# Banco Mundial e IMF no requieren key
 ```
 
-El Banco Mundial y el FMI no requieren clave para uso estándar (con límites de tasa). El dashboard funciona completamente sin ninguna API key gracias al modo **offline-first**: cuando una fuente no responde, usa la base de datos geopolítica documentada integrada en el código.
-
----
-
-## Arquitectura de datos
-
-El sistema opera en tres capas con degradación elegante:
-
-```
-Petición de datos
-      │
-      ▼
-┌─────────────────────┐
-│  1. wbgapi (Python) │  → PIB, IED, energía, reservas
-│     Banco Mundial   │     Indicadores: NY.GDP.MKTP.CD
-└────────┬────────────┘     EG.IMP.CONS.ZS, FI.RES.TOTL.CD
-         │ falla
-         ▼
-┌─────────────────────┐
-│  2. REST endpoint   │  → https://api.worldbank.org/v2/
-│     World Bank API  │     Mismo indicador, sin librería
-└────────┬────────────┘
-         │ falla
-         ▼
-┌─────────────────────┐
-│  3. Base de datos   │  → 22 países × 7 variables
-│     offline-first   │     Documentada con fuentes primarias
-└─────────────────────┘     Actualizable manualmente
-```
-
-### APIs integradas
-
-| API | Endpoint | Variables extraídas | Requiere key |
-|---|---|---|---|
-| **Banco Mundial** | `api.worldbank.org/v2/` | PIB, energía, reservas | No |
-| **UN Comtrade** | `comtradeapi.un.org/public/v1/` | Exportaciones HS27, HS26, HS84 | No (≤100 req/h) |
-| **FMI IFS** | `dataservices.imf.org/REST/SDMX_JSON.svc/` | Reservas de divisas | No |
+> En Streamlit Cloud, introduce las keys en **Settings → Secrets** de tu app, no en el repositorio.
 
 ---
 
@@ -145,64 +127,47 @@ Petición de datos
 
 ```
 icg-dashboard/
-├── icg_dashboard.py        # Aplicación principal (1,900 líneas)
-├── .streamlit/
-│   └── secrets.toml        # API keys (no commitear)
+├── icg_dashboard.py     # Aplicación principal
+├── requirements.txt     # Dependencias
 ├── README.md
-└── requirements.txt
+└── .streamlit/
+    └── secrets.toml     # API keys (NO commitear)
 ```
 
-### `requirements.txt`
-
+Añade al `.gitignore`:
 ```
-streamlit>=1.32.0
-plotly>=5.19.0
-pandas>=2.0.0
-numpy>=1.24.0
-requests>=2.31.0
-wbgapi>=1.0.12
+.streamlit/secrets.toml
 ```
 
 ---
 
 ## Fuentes de datos primarias
 
-Todos los datos de la base offline están documentados con su fuente primaria. Las variables de codificación ordinal (banco de desarrollo, profundidad de acuerdos, membresía en bloques) están explicadas en la pestaña **Datos y Metodología** del dashboard.
-
-| Variable | Fuente | Indicador / URL |
+| Variable | Fuente | Referencia |
 |---|---|---|
 | Exportaciones críticas | UN Comtrade | HS 27 + HS 26 + HS 84 · `comtrade.un.org` |
 | Reservas de divisas | World Bank IDS | `FI.RES.TOTL.CD` |
 | Importaciones de energía | World Bank WDI | `EG.IMP.CONS.ZS` |
 | Autosuficiencia alimentaria | FAO / USDA | Food Balance Sheets · `fao.org/faostat` |
 | PIB | World Bank WDI | `NY.GDP.MKTP.CD` |
-| % exportaciones hacia P1 | WITS / World Bank | Partner share · `wits.worldbank.org` |
+| % exportaciones hacia EE.UU. | WITS / World Bank | Partner share · `wits.worldbank.org` |
 | Score de sanciones | OFAC + EU Sanctions Map | `sanctionsmap.eu` · `ofac.treasury.gov` |
+| Noticias en vivo | NewsAPI.org | `newsapi.org/v2/everything` |
 
 ---
 
-## Limitaciones y notas metodológicas
+## Limitaciones
 
-**Sobre la fórmula.** El ICG es un índice sintético de análisis comparativo, no una medida de poder absoluto. La raíz cuadrada del producto Apalancamiento × Resiliencia reduce la dominancia extrema de actores con ventaja en una sola dimensión. El divisor `(1 + D/100)` evita el colapso matemático en casos de dependencia máxima.
+**Fórmula.** El ICG es un índice comparativo, no una medida de poder absoluto. La raíz cuadrada suaviza la dominancia extrema de actores con ventaja en una sola dimensión. El divisor `(1 + D/100)` evita el colapso matemático en dependencia máxima.
 
-**Sobre la base de datos offline.** Los valores de la base integrada son proxies documentados ca. 2022–2023. Para análisis de política o publicación académica se recomienda reemplazarlos con datos extraídos directamente de las APIs. Las variables ordinales (v4 banco de desarrollo, v9 bloques multilaterales, v10 profundidad de acuerdos) son codificaciones del investigador y deben tratarse como tal.
+**Base offline.** Valores proxy ca. 2022–2023. Para análisis académico se recomienda reemplazarlos con datos extraídos directamente de las APIs.
 
-**Sobre el simulador arancelario.** El modelo asume un mecanismo de transmisión lineal con factor de fricción fijo (0.70). En la realidad, la elasticidad de redirección de exportaciones varía según el bien, el país y la disponibilidad de mercados alternativos. El simulador es una herramienta de escenarios, no un modelo econométrico de equilibrio general.
+**Simulador arancelario.** Transmisión lineal con factor de fricción fijo (0.70). Es una herramienta de escenarios, no un modelo de equilibrio general.
 
-**Sobre los datos de Irán y Corea del Norte.** Los valores de exportaciones y reservas de países bajo sanciones máximas son estimaciones con alta incertidumbre. Se recomiendan las fuentes CIA World Factbook, informes del Panel de Expertos de la ONU y bases de CSIS para refinar esos casos.
-
----
-
-## Casos de uso
-
-- **Análisis académico** de poder geoeconómico comparado en economía política internacional.
-- **Docencia** en cursos de relaciones internacionales, geopolítica y economía política.
-- **Inteligencia estratégica** para evaluar vulnerabilidades de cadenas de suministro ante escenarios de sanciones o aranceles.
-- **Periodismo de datos** sobre el impacto de la política comercial de la administración Trump 2025–2029.
-- **Base para investigación** sobre dependencia geoeconómica triangular y umbrales de conversión.
+**Ajuste por noticias.** El sistema detecta países por coincidencia de palabras clave, no por NLP semántico. El delta máximo de +2.5 pts por país limita el impacto de falsos positivos.
 
 ---
 
 ## Licencia
 
-MIT License. Los datos de la base offline son proxies documentados de fuentes públicas — ver atribuciones en la pestaña *Datos y Metodología* del dashboard y en los comentarios del código.
+MIT License. Datos de la base offline son proxies documentados de fuentes públicas — ver atribuciones en la pestaña *Metodología* del dashboard y en los comentarios del código.
