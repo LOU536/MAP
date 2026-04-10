@@ -1422,7 +1422,7 @@ def main():
         radar_countries = st.multiselect(
             "Comparar en Radar Chart",
             options=all_countries,
-            default=["United States", "China", "Russia", "Iran"],
+            default=[],
         )
         highlight_countries = st.multiselect(
             "Destacar en Simulador",
