@@ -1419,10 +1419,12 @@ def main():
             "UAE", "South Africa", "France", "Nigeria", "Indonesia",
             "Poland", "Kazakhstan",
         ])
-        radar_countries = st.multiselect(
+        defaults_list = ["United States", "China", "Russia", "Iran"],
+        safe_defaults = [c for c in defaults_list if c in all_countries]
+            radar_countries = st.multiselect(
             "Comparar en Radar Chart",
             options=all_countries,
-            default=[],
+            default=safe_defaults,
         )
         highlight_countries = st.multiselect(
             "Destacar en Simulador",
