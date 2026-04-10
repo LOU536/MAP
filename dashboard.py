@@ -1421,7 +1421,7 @@ def main():
         ])
         defaults_list = ["United States", "China", "Russia", "Iran"],
         safe_defaults = [c for c in defaults_list if c in all_countries]
-            radar_countries = st.multiselect(
+        radar_countries = st.multiselect(
             "Comparar en Radar Chart",
             options=all_countries,
             default=safe_defaults,
